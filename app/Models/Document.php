@@ -1,0 +1,41 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+
+class Document extends Model
+{
+    use HasFactory;
+
+    protected $fillable = [
+        'title',
+        'file_path',
+        'code',             
+        'qr_code_path',
+        'user_id',
+        'type',
+    ];
+
+    public function user() {
+        return $this->belongsTo(User::class);
+    }
+    public function downloads()
+    {
+    return $this->hasMany(DocumentDownload::class);
+    }
+    public function logs()
+    {
+    return $this->hasMany(DocumentLog::class);
+    }
+    public function latestLog()
+    {
+    return $this->hasOne(DocumentLog::class)->latestOfMany();
+    }
+    public function getCurrentStatusAttribute()
+    {
+    return $this->latestLog?->status ?? 'unknown';
+    }
+
+}
