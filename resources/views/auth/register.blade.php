@@ -116,20 +116,29 @@
                 @enderror
             </div>
 
+            {{-- Division Dropdown --}}
             <div class="mb-3">
-                <label for="division_name" class="form-label">{{ __('Division Name') }}</label>
-                <input id="division_name" type="text" class="form-control @error('division_name') is-invalid @enderror"
-                    name="division_name" value="{{ old('division_name') }}" required placeholder="e.g. Finance Division">
-                @error('division_name')
+                <label for="division_id" class="form-label">{{ __('Division') }}</label>
+                <select id="division-select" name="division_id" class="form-control @error('division_id') is-invalid @enderror">
+                    <option value="">{{ __('Select division') }}</option>
+                    @foreach($divisions as $division)
+                        <option value="{{ $division->id }}" {{ old('division_id') == $division->id ? 'selected' : '' }}>
+                            {{ $division->name }}
+                        </option>
+                    @endforeach
+                </select>
+                @error('division_id')
                     <div class="invalid-feedback text-danger">{{ $message }}</div>
                 @enderror
             </div>
 
+            {{-- Section Dropdown --}}
             <div class="mb-3">
-                <label for="section_name" class="form-label">{{ __('Section Name') }}</label>
-                <input id="section_name" type="text" class="form-control @error('section_name') is-invalid @enderror"
-                    name="section_name" value="{{ old('section_name') }}" required placeholder="e.g. Budget Section">
-                @error('section_name')
+                <label for="section_id" class="form-label">{{ __('Section') }}</label>
+                <select id="section-select" name="section_id" class="form-control @error('section_id') is-invalid @enderror" disabled>
+                    <option value="">{{ __('Select section') }}</option>
+                </select>
+                @error('section_id')
                     <div class="invalid-feedback text-danger">{{ $message }}</div>
                 @enderror
             </div>
@@ -159,4 +168,37 @@
         </div>
     </div>
 </div>
+
+{{-- jQuery --}}
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script>
+$(function() {
+    $('#division-select').on('change', function() {
+        let divisionId = $(this).val();
+        let section = $('#section-select');
+
+        section.prop('disabled', true).html('<option>{{ __("Loading…") }}</option>');
+
+        if (!divisionId) {
+            section.html('<option>{{ __("Select section") }}</option>').prop('disabled', true);
+            return;
+        }
+
+        $.getJSON(`/sections/by-division/${divisionId}`, function(data) {
+            section.html('<option>{{ __("Select section") }}</option>');
+            data.forEach(sec => {
+                section.append(`<option value="${sec.id}">${sec.name}</option>`);
+            });
+            section.prop('disabled', false);
+        }).fail(() => {
+            section.html('<option>{{ __("Select section") }}</option>').prop('disabled', true);
+        });
+    });
+
+    // Auto-trigger if old value exists (after form error)
+    @if(old('division_id'))
+        $('#division-select').trigger('change');
+    @endif
+});
+</script>
 @endsection

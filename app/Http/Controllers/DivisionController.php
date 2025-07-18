@@ -13,9 +13,12 @@ class DivisionController extends Controller
         return view('Divisions.index', compact('divisions'));
     }
 
-    public function create()
+    public function create(Request $request)
     {
-        return view('Divisions.create');
+        // Pass the previous URL to the view for the "Return" button
+        return view('Divisions.create', [
+            'backUrl' => url()->previous()
+        ]);
     }
 
     public function store(Request $request)
@@ -26,7 +29,7 @@ class DivisionController extends Controller
 
         Division::create($request->all());
 
-        return redirect()->route('division.index')->with('success', 'Division created successfully.');
+        return redirect()->route('divisions.index')->with('success', 'Division created successfully.');
     }
 
     public function edit($id)
@@ -44,7 +47,7 @@ class DivisionController extends Controller
         $division = Division::findOrFail($id);
         $division->update($request->all());
 
-        return redirect()->route('division.index')->with('success', 'Division updated successfully.');
+        return redirect()->route('divisions.index')->with('success', 'Division updated successfully.');
     }
 
     public function destroy($id)
@@ -52,6 +55,6 @@ class DivisionController extends Controller
         $division = Division::findOrFail($id);
         $division->delete();
 
-        return redirect()->route('division.index')->with('success', 'Division deleted successfully.');
+        return redirect()->route('divisions.index')->with('success', 'Division deleted successfully.');
     }
 }

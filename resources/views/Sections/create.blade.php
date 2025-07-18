@@ -78,17 +78,20 @@
 
         <form action="{{ route('sections.store') }}" method="POST" autocomplete="off">
             @csrf
+
             <div class="mb-3">
                 <label for="name" class="form-label">Section Name</label>
-                <input type="text" id="name" name="name" class="form-control" required>
+                <input type="text" id="name" name="name" class="form-control" required value="{{ old('name') }}">
             </div>
 
             <div class="mb-4">
-                <label for="department_id" class="form-label">Department</label>
-                <select id="department_id" name="department_id" class="form-control" required>
-                    <option value="">-- Select Department --</option>
-                    @foreach ($departments as $department)
-                        <option value="{{ $department->id }}">{{ $department->name }}</option>
+                <label for="division_id" class="form-label">Division</label>
+                <select id="division_id" name="division_id" class="form-control" required>
+                    <option value="">-- Select Division --</option>
+                    @foreach ($divisions as $division)
+                        <option value="{{ $division->id }}" {{ old('division_id') == $division->id ? 'selected' : '' }}>
+                            {{ $division->name }}
+                        </option>
                     @endforeach
                 </select>
             </div>

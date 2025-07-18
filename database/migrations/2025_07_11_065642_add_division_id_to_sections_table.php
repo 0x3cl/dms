@@ -10,20 +10,18 @@ return new class extends Migration
      * Run the migrations.
      */
     public function up(): void
-{
-    Schema::table('document_logs', function (Blueprint $table) {
-        $table->foreignId('document_id')
-              ->constrained('documents')
-              ->onDelete('cascade');
-    });
-}
+    {
+        Schema::table('sections', function (Blueprint $table) {
+            //
+        });
+    }
 
     /**
      * Reverse the migrations.
      */
     public function down(): void
     {
-        Schema::table('document_logs', function (Blueprint $table) {
+        Schema::table('sections', function (Blueprint $table) {
             //
         });
     }

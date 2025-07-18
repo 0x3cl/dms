@@ -4,21 +4,20 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use App\Models\Department;
 
 class Section extends Model
 {
     use HasFactory;
 
-    protected $fillable = ['name', 'department_id'];
+    protected $fillable = ['name', 'division_id'];
 
-    public function department()
+    public function division()
     {
-        return $this->belongsTo(Department::class);
-    }
-    public function employees()
-    {
-    return $this->hasMany(Employee::class);
+        return $this->belongsTo(Division::class);
     }
 
+    public function users()
+    {
+        return $this->hasMany(User::class);
+    }
 }

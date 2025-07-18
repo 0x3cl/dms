@@ -8,9 +8,14 @@
 
     <div class="mb-4">
         <p><strong>QR Code:</strong></p>
-    <img src="{{url('/storage/qrcodes/'.$file_name)}}"/>
+        <img src="{{ url('/storage/qrcodes/' . $file_name) }}" alt="QR Code" />
     </div>
 
-    <a href="{{ route('dashboard') }}" class="btn btn-primary">Back to Dashboard</a>
+    <div class="d-flex justify-content-center gap-3">
+        <a href="{{ route('dashboard') }}" class="btn btn-primary">Back to Dashboard</a>
+        <a href="{{ route('documents.qrcode.download', ['file_name' => $file_name]) }}" class="btn btn-success">
+            Download QR Code
+        </a>
+    </div>
 </div>
 @endsection

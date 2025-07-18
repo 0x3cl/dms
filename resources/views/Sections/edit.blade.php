@@ -82,15 +82,15 @@
 
             <div class="mb-3">
                 <label for="name" class="form-label">Section Name</label>
-                <input type="text" id="name" name="name" value="{{ $section->name }}" class="form-control" required>
+                <input type="text" id="name" name="name" value="{{ old('name', $section->name) }}" class="form-control" required>
             </div>
 
             <div class="mb-4">
-                <label for="department_id" class="form-label">Department</label>
-                <select id="department_id" name="department_id" class="form-control" required>
-                    @foreach ($departments as $department)
-                        <option value="{{ $department->id }}" {{ $section->department_id == $department->id ? 'selected' : '' }}>
-                            {{ $department->name }}
+                <label for="division_id" class="form-label">Division</label>
+                <select id="division_id" name="division_id" class="form-control" required>
+                    @foreach ($divisions as $division)
+                        <option value="{{ $division->id }}" {{ old('division_id', $section->division_id) == $division->id ? 'selected' : '' }}>
+                            {{ $division->name }}
                         </option>
                     @endforeach
                 </select>

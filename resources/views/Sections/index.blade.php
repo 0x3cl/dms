@@ -61,7 +61,7 @@
         <h1 class="text-center mb-4">Sections</h1>
 
         <div class="d-flex justify-content-between mb-3">
-            <a href="{{ url('/') }}" class="btn btn-secondary">← Back to Dashboard</a>
+            <a href="{{ route('dashboard') }}" class="btn btn-secondary">← Back to Dashboard</a>
             <a href="{{ route('sections.create') }}" class="btn btn-primary">+ Add Section</a>
         </div>
 
@@ -77,7 +77,7 @@
                     <tr>
                         <th>ID</th>
                         <th>Section Name</th>
-                        <th>Department</th>
+                        <th>Division</th>
                         <th style="width: 180px;">Actions</th>
                     </tr>
                 </thead>
@@ -86,7 +86,7 @@
                         <tr>
                             <td>{{ $section->id }}</td>
                             <td>{{ $section->name }}</td>
-                            <td>{{ $section->department->name ?? 'N/A' }}</td>
+                            <td>{{ $section->division->name ?? 'N/A' }}</td>
                             <td>
                                 <a href="{{ route('sections.edit', $section->id) }}" class="btn btn-sm btn-warning">Edit</a>
 

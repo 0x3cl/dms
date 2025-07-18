@@ -61,7 +61,7 @@
         <h1 class="text-center mb-4">Employees</h1>
 
         <div class="d-flex justify-content-between mb-3">
-            <a href="{{ url('/') }}" class="btn btn-secondary">← Back to Dashboard</a>
+            <a href="{{ route('dashboard') }}" class="btn btn-secondary">← Back to Dashboard</a>
             <a href="{{ route('employees.create') }}" class="btn btn-primary">+ Add Employee</a>
         </div>
 

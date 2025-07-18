@@ -13,9 +13,16 @@ return new class extends Migration
             $table->unsignedBigInteger('division_id')->nullable()->after('id');
             $table->unsignedBigInteger('section_id')->nullable()->after('division_id');
 
-            // Then add foreign key constraints
-            $table->foreign('division_id')->references('id')->on('division')->onDelete('set null');
-            $table->foreign('section_id')->references('id')->on('sections')->onDelete('set null');
+            // Then add foreign key constraints with correct table names
+            $table->foreign('division_id')
+                  ->references('id')
+                  ->on('divisions')  // ✔️ Corrected: was 'division'
+                  ->onDelete('set null');
+
+            $table->foreign('section_id')
+                  ->references('id')
+                  ->on('sections')
+                  ->onDelete('set null');
         });
     }
 

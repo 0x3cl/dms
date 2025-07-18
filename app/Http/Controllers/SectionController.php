@@ -3,7 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Section;
-use App\Models\Department;
+use App\Models\Division;
 use Illuminate\Http\Request;
 
 class SectionController extends Controller
@@ -11,15 +11,15 @@ class SectionController extends Controller
     // Show all sections
     public function index()
     {
-        $sections = Section::with('department')->get(); // eager load department
+        $sections = Section::with('division')->get(); // Eager load division
         return view('sections.index', compact('sections'));
     }
 
     // Show create form
     public function create()
     {
-        $departments = Department::all(); // for dropdown
-        return view('sections.create', compact('departments'));
+        $divisions = Division::all(); // For division dropdown
+        return view('sections.create', compact('divisions'));
     }
 
     // Store new section
@@ -27,12 +27,12 @@ class SectionController extends Controller
     {
         $request->validate([
             'name' => 'required|string|max:255',
-            'department_id' => 'required|exists:departments,id',
+            'division_id' => 'required|exists:divisions,id',
         ]);
 
         Section::create([
             'name' => $request->input('name'),
-            'department_id' => $request->input('department_id'),
+            'division_id' => $request->input('division_id'),
         ]);
 
         return redirect()->route('sections.index')->with('success', 'Section created successfully.');
@@ -42,8 +42,8 @@ class SectionController extends Controller
     public function edit($id)
     {
         $section = Section::findOrFail($id);
-        $departments = Department::all();
-        return view('sections.edit', compact('section', 'departments'));
+        $divisions = Division::all();
+        return view('sections.edit', compact('section', 'divisions'));
     }
 
     // Update section
@@ -51,13 +51,13 @@ class SectionController extends Controller
     {
         $request->validate([
             'name' => 'required|string|max:255',
-            'department_id' => 'required|exists:departments,id',
+            'division_id' => 'required|exists:divisions,id',
         ]);
 
         $section = Section::findOrFail($id);
         $section->update([
             'name' => $request->input('name'),
-            'department_id' => $request->input('department_id'),
+            'division_id' => $request->input('division_id'),
         ]);
 
         return redirect()->route('sections.index')->with('success', 'Section updated successfully.');
@@ -71,10 +71,11 @@ class SectionController extends Controller
 
         return redirect()->route('sections.index')->with('success', 'Section deleted successfully.');
     }
-    public function byDepartment($departmentId)
-    {
-    $sections = \App\Models\Section::where('department_id', $departmentId)->get();
-    return response()->json($sections);
-    }
 
+    // Optional: for dynamic dropdowns
+    public function byDivision($divisionId)
+    {
+        $sections = Section::where('division_id', $divisionId)->get();
+        return response()->json($sections);
+    }
 }

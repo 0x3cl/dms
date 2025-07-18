@@ -13,7 +13,8 @@ return new class extends Migration {
             $table->unsignedBigInteger('division_id');
             $table->timestamps();
 
-            $table->foreign('division_id')->references('id')->on('division')->onDelete('cascade');
+            // 👇 Make sure to match the correct table name: 'divisions'
+            $table->foreign('division_id')->references('id')->on('divisions')->onDelete('cascade');
         });
     }
 

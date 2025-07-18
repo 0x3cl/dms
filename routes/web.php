@@ -10,7 +10,9 @@ use App\Http\Controllers\{
     SectionController,
     EmployeeController,
     DocumentController,
-    DashboardController
+    DashboardController,
+    DocumentLogController,
+    NotificationController // <-- Import the new controller
 };
 
 // Public routes
@@ -24,24 +26,21 @@ Route::post('/logout', [AuthenticatedSessionController::class, 'destroy'])->name
 Route::get('/register', [RegisteredUserController::class, 'create'])->name('register');
 Route::post('/register', [RegisteredUserController::class, 'store']);
 
-// Publicly accessible document success page (must come before resource route)
+// Publicly accessible document success page
 Route::get('/documents/success/{code}/{file_name}', [DocumentController::class, 'success'])->name('documents.success');
 
 // Public QR view and manual code entry
 Route::get('/documents/view/{code}', [DocumentController::class, 'view'])->name('documents.view');
+Route::get('/documents/qr/download/{file_name}', [DocumentController::class, 'downloadQr'])
+    ->name('documents.qrcode.download');
+
 Route::get('/track', fn() => view('track'));
 Route::get('/documents/track', [DocumentController::class, 'viewByCode'])->name('documents.viewByCode');
 
 // QR scanner page
 Route::get('/scan', [DocumentController::class, 'scan'])->name('scan.qr');
 
-// Download routes
-Route::get('/documents/download/{id}', [DocumentController::class, 'download'])->name('documents.download');
-Route::get('/admin/download-logs', [DocumentController::class, 'downloadLogs'])
-    ->middleware(['auth'])
-    ->name('admin.download.logs');
-
-// AJAX route to get sections by division (was by department)
+// AJAX route to get sections by division
 Route::get('/sections/by-division/{id}', [SectionController::class, 'byDivision']);
 
 // Authenticated routes
@@ -51,15 +50,36 @@ Route::middleware(['auth'])->group(function () {
     Route::resource('divisions', DivisionController::class)->except(['show']);
     Route::resource('sections', SectionController::class);
     Route::resource('employees', EmployeeController::class);
-    Route::resource('documents', DocumentController::class); // ⬅️ must come AFTER documents.success route
+    Route::resource('documents', DocumentController::class);
 
-    // Profile routes
+    // Route for viewing a file
+    Route::get('/documents/{id}/file/{action}', [DocumentController::class, 'accessFile'])
+        ->where('action', 'view|download')
+        ->name('documents.accessFile');
+
+    // Route for receiving and downloading a file
+    Route::post('/documents/{id}/receive', [DocumentController::class, 'receiveFile'])->name('documents.receiveFile');
+
+    // Route to mark a document as "ended"
+    Route::patch('/documents/{id}/end', [DocumentController::class, 'end'])->name('documents.end');
+    
+    // Admin-only route to see download history
+    Route::get('/admin/download-logs', [DocumentController::class, 'downloadLogs'])->name('admin.download.logs');
+
+    // Profile management
     Route::prefix('profile')->group(function () {
         Route::get('/', [ProfileController::class, 'edit'])->name('profile.edit');
         Route::patch('/', [ProfileController::class, 'update'])->name('profile.update');
         Route::delete('/', [ProfileController::class, 'destroy'])->name('profile.destroy');
     });
 
-    // Log document activity
-    Route::post('/document/log', [DocumentController::class, 'storeLog'])->name('document.log');
+    // Document activity logging
+    Route::post('/document/log', [DocumentLogController::class, 'store'])->name('document.log');
+
+    // View document logs
+    Route::get('/documents/{document}/logs', [DocumentLogController::class, 'index'])->name('documents.logs');
+    
+    // NEW: Notification routes
+    Route::get('/notifications/{id}/read', [NotificationController::class, 'read'])->name('notifications.read');
+    Route::get('/notifications/mark-all-read', [NotificationController::class, 'markAllRead'])->name('notifications.markAllRead');
 });

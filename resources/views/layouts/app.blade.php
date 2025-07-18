@@ -15,6 +15,10 @@
     <!-- Google Fonts: Poppins -->
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
 
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" xintegrity="sha512-Avb2QiuDEEvB4bZJYdft2mNjVShBftLdPG8FJ0V7irTLQ8UoGqcPxhU9YAUckvVFeTTSkbcCGs2G1LVzmbcxzQ==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+
+
     <style>
         body {
             background-color: #073263;
@@ -50,11 +54,67 @@
         .btn-primary:hover {
             background-color: #4064a9;
         }
+        
+        /* Styles for notification dropdown */
+        .notification-dropdown .dropdown-menu {
+            width: 350px;
+            padding: 0;
+        }
+        .notification-dropdown .dropdown-item {
+            white-space: normal;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .notification-dropdown .dropdown-item:last-child {
+            border-bottom: none;
+        }
     </style>
 
     @yield('head')
 </head>
 <body>
+    {{-- You would typically have a navbar here. I'll add a placeholder one with the notification logic. --}}
+    <nav class="navbar navbar-expand-lg navbar-dark navbar-custom">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="{{ route('dashboard') }}">DocTrack</a>
+            <div class="d-flex ms-auto">
+                @auth
+                    <!-- NEW: Notifications Dropdown -->
+                    <div class="dropdown notification-dropdown">
+                        <a class="nav-link text-white" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="fas fa-bell"></i>
+                            @if(auth()->user()->unreadNotifications->count())
+                                <span class="badge rounded-pill bg-danger">
+                                    {{ auth()->user()->unreadNotifications->count() }}
+                                </span>
+                            @endif
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            <li class="p-2">
+                                <h6 class="dropdown-header">Notifications</h6>
+                            </li>
+                            @forelse(auth()->user()->unreadNotifications as $notification)
+                                <li>
+                                    <a class="dropdown-item p-2" href="{{ route('notifications.read', $notification->id) }}">
+                                        <div class="small">{{ $notification->data['message'] }}</div>
+                                        <div class="small text-muted">{{ $notification->created_at->diffForHumans() }}</div>
+                                    </a>
+                                </li>
+                            @empty
+                                <li><p class="text-center text-muted p-3">No new notifications.</p></li>
+                            @endforelse
+                            @if(auth()->user()->unreadNotifications->count())
+                            <li class="p-2 text-center">
+                                <a href="{{ route('notifications.markAllRead') }}" class="small">Mark all as read</a>
+                            </li>
+                            @endif
+                        </ul>
+                    </div>
+                @endauth
+            </div>
+        </div>
+    </nav>
+
+
     @yield('content')
 
     <!-- ✅ JS Libraries -->

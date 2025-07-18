@@ -65,7 +65,7 @@
         <h1 class="text-center mb-3">Department of Science and Technology</h1>
         <h2 class="text-center mb-4">Add Division</h2>
 
-        <a href="{{ url()->previous() }}" class="btn btn-secondary mb-4">← Return</a>
+        <a href="{{ $backUrl ?? route('dashboard') }}" class="btn btn-secondary mb-4">← Return</a>
 
         @if ($errors->any())
             <div class="error-list">
@@ -89,3 +89,4 @@
     </div>
 </div>
 @endsection
+    

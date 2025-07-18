@@ -11,12 +11,26 @@ return new class extends Migration
         Schema::create('document_downloads', function (Blueprint $table) {
             $table->id();
 
-            $table->foreignId('document_id')->constrained()->onDelete('cascade');
-            $table->foreignId('user_id')->constrained()->onDelete('cascade');
+            $table->foreignId('document_id')
+                  ->constrained()
+                  ->onDelete('cascade');
 
-            // ✅ Use updated table and column names
-            $table->foreignId('division_id')->nullable()->constrained('division')->onDelete('set null');
-            $table->foreignId('section_id')->nullable()->constrained('sections')->onDelete('set null');
+            $table->foreignId('user_id')
+                  ->constrained()
+                  ->onDelete('cascade');
+
+            // Fix: reference 'divisions' (plural)
+            $table->unsignedBigInteger('division_id')->nullable();
+            $table->foreign('division_id')
+                  ->references('id')
+                  ->on('divisions')
+                  ->onDelete('set null');
+
+            $table->unsignedBigInteger('section_id')->nullable();
+            $table->foreign('section_id')
+                  ->references('id')
+                  ->on('sections')
+                  ->onDelete('set null');
 
             $table->timestamp('downloaded_at')->useCurrent();
             $table->timestamps();

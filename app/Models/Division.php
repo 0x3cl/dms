@@ -9,7 +9,15 @@ class Division extends Model
 {
     use HasFactory;
 
-    protected $table = 'division';
-
     protected $fillable = ['name'];
+
+    public function sections()
+    {
+        return $this->hasMany(Section::class);
+    }
+
+    public function users()
+    {
+        return $this->hasMany(User::class);
+    }
 }

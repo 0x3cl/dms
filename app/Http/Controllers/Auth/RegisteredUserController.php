@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Models\Division;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rules;
@@ -13,24 +14,26 @@ class RegisteredUserController extends Controller
 {
     public function create(): View
     {
-        return view('auth.register');
+        $divisions = Division::with('sections')->get();
+        return view('auth.register', compact('divisions'));
     }
 
     public function store(Request $request)
     {
+
         $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'employee_id' => ['required', 'string', 'max:50', 'unique:users'],
-            'division_name' => ['required', 'string', 'max:100'],
-            'section_name' => ['required', 'string', 'max:100'],
+            'division_id' => ['required', 'exists:divisions,id'],
+            'section_id' => ['required', 'exists:sections,id'],
             'password' => ['required', 'confirmed', Rules\Password::defaults()],
         ]);
 
         User::create([
             'name' => $request->name,
             'employee_id' => $request->employee_id,
-            'division_name' => $request->division_name,
-            'section_name' => $request->section_name,
+            'division_id' => $request->division_id,
+            'section_id' => $request->section_id,
             'password' => Hash::make($request->password),
         ]);
 

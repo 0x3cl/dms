@@ -55,13 +55,13 @@
 
         <a href="{{ url()->previous() }}" class="btn btn-secondary mb-4">← Return</a>
 
-        <form method="POST" action="{{ route('divisions.update', $department->id) }}">
+        <form method="POST" action="{{ route('divisions.update', $division->id) }}">
             @csrf
             @method('PUT')
 
             <div class="mb-3">
                 <label for="name" class="form-label">Division Name</label>
-                <input type="text" name="name" id="name" value="{{ old('name', $department->name) }}" class="form-control" required autocomplete="off">
+                <input type="text" name="name" id="name" value="{{ old('name', $division->name) }}" class="form-control" required autocomplete="off">
             </div>
 
             <button type="submit" class="btn btn-primary px-4">Update</button>

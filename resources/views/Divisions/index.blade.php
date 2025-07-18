@@ -68,7 +68,7 @@
         <h2 class="mb-4 text-center">Divisions List</h2>
 
         <div class="d-flex justify-content-between mb-4">
-            <a href="{{ url('/') }}" class="btn btn-secondary">← Back to Dashboard</a>
+            <a href="{{ route('dashboard') }}" class="btn btn-secondary">← Back to Dashboard</a>
             <a href="{{ route('divisions.create') }}" class="btn btn-primary">+ Add Division</a>
         </div>
 
