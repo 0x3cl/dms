@@ -12,6 +12,9 @@ class PasswordController extends Controller
 {
     /**
      * Update the user's password.
+     *
+     * Errors go into the `updatePassword` bag so the account page can show
+     * them beside its own form without colliding with the profile form.
      */
     public function update(Request $request): RedirectResponse
     {
@@ -24,6 +27,6 @@ class PasswordController extends Controller
             'password' => Hash::make($validated['password']),
         ]);
 
-        return back()->with('status', 'password-updated');
+        return back()->with('success', 'Password updated.');
     }
 }

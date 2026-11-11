@@ -2,34 +2,60 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
+use App\Models\User;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Auth;
 
 class NotificationController extends Controller
 {
     /**
-     * Mark a specific notification as read and redirect to its associated URL.
+     * The payload behind the header bell, shared on every page by
+     * HandleInertiaRequests. Kept here rather than in the middleware so the
+     * shape of a notification row is defined in one place.
      *
-     * @param  string  $id
-     * @return \Illuminate\Http\RedirectResponse
+     * @return array{items: list<array{id: string, message: string, url: string|null, read: bool, created_at: string}>, unread: int}
      */
-    public function read($id)
+    public static function feedFor(User $user, int $limit = 8): array
+    {
+        $items = $user->notifications()
+            ->latest()
+            ->limit($limit)
+            ->get()
+            ->map(fn ($notification): array => [
+                'id' => $notification->id,
+                'message' => $notification->data['message'] ?? 'Notification',
+                'url' => $notification->data['url'] ?? null,
+                'read' => $notification->read_at !== null,
+                'created_at' => $notification->created_at->diffForHumans(),
+            ])
+            ->all();
+
+        return [
+            'items' => $items,
+            'unread' => $user->unreadNotifications()->count(),
+        ];
+    }
+
+    /**
+     * Mark a specific notification as read and redirect to its associated URL.
+     */
+    public function read(string $id): RedirectResponse
     {
         $notification = Auth::user()->notifications()->findOrFail($id);
         $notification->markAsRead();
 
-        // Redirect to the URL that was stored in the notification's data
-        return redirect($notification->data['url']);
+        // A notification whose payload predates the `url` key still has to go
+        // somewhere, so fall back to the dashboard rather than redirect(null).
+        return redirect($notification->data['url'] ?? route('dashboard'));
     }
 
     /**
      * Mark all of the user's unread notifications as read.
-     *
-     * @return \Illuminate\Http\RedirectResponse
      */
-    public function markAllRead()
+    public function markAllRead(): RedirectResponse
     {
         Auth::user()->unreadNotifications->markAsRead();
-        return redirect()->back()->with('success', 'All notifications marked as read.');
+
+        return back()->with('success', 'All notifications marked as read.');
     }
 }

@@ -1,66 +1,74 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# DocTrack
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+A document management system for **DOST-PTRI**. Staff upload an office document; DocTrack stamps it with a tracking code and a printable QR label, and every view, download, acknowledgement and hand-off from then on is written to an audit trail anyone holding the document can follow.
 
-## About Laravel
+A document is either **public** — readable by anyone with its tracking code — or **private** to a named list of recipients, who are notified in the app when it is shared with them.
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## Stack
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+Laravel 12 · Inertia 2 · Vue 3 · Tailwind 4 · MySQL 8 · Pest
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+The frontend is Vue 3 written as **plain `.js` components** with inline templates — there are no `.vue` files. See [`documentation/project-stack.md`](documentation/project-stack.md) for the full table and [`documentation/design-system.md`](documentation/design-system.md) for the visual contract.
 
-## Learning Laravel
+## Local setup
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+```bash
+composer install
+npm install
 
-You may also try the [Laravel Bootcamp](https://bootcamp.laravel.com), where you will be guided through building a modern Laravel application from scratch.
+cp .env.example .env
+php artisan key:generate
+# set DB_DATABASE / DB_USERNAME / DB_PASSWORD in .env
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+php artisan migrate
+php artisan db:seed
 
-## Laravel Sponsors
+# Required: uploaded documents and QR labels 404 without it.
+php artisan storage:link
+```
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+Then run the app:
 
-### Premium Partners
+```bash
+composer run dev     # serve + queue + vite together
+# or separately:
+php artisan serve
+npm run dev
+```
 
-- **[Vehikl](https://vehikl.com/)**
-- **[Tighten Co.](https://tighten.co)**
-- **[WebReinvent](https://webreinvent.com/)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel/)**
-- **[Cyber-Duck](https://cyber-duck.co.uk)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Jump24](https://jump24.co.uk)**
-- **[Redberry](https://redberry.international/laravel/)**
-- **[Active Logic](https://activelogic.com)**
-- **[byte5](https://byte5.de)**
-- **[OP.GG](https://op.gg)**
+The seeded account is employee ID **`EMP-0001`**, password **`password`**.
 
-## Contributing
+## Tests
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+Tests run against their own MySQL database, not in-memory SQLite — the deployment target ships `pdo_mysql` but not `pdo_sqlite`. Create it once:
 
-## Code of Conduct
+```sql
+CREATE DATABASE dms_test;
+```
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+```bash
+php artisan test --compact                      # everything
+php artisan test --compact --filter=testName    # one test
+vendor/bin/pint                                 # format PHP
+npm run build                                   # a Vue inline template only fails at build time
+```
 
-## Security Vulnerabilities
+CI (`.github/workflows/tests.yml`) runs Pint, the frontend build and the test suite against a MySQL service container on every push and pull request to `main` and `develop`.
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+## A note on access
 
-## License
+**This application has no roles or permissions.** Every authenticated user can reach every module, including the download-log report and the directory CRUD screens, and registration is self-service with no approval step.
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+The per-document rules are real and enforced — a private document is readable only by its uploader and the recipients named at upload, and only the uploader can edit, delete or end a document. But there is no module-level access model. This is a known, deliberate state rather than an oversight; it is written up in [`documentation/architecture.md`](documentation/architecture.md) → Open access, and should be read before deploying anywhere the account list is not trusted.
+
+## Documentation
+
+| File | Owns |
+| --- | --- |
+| [`AGENTS.md`](AGENTS.md) | The fast path for anyone (or anything) changing this code: source map, working rules, invariants |
+| [`CLAUDE.md`](CLAUDE.md) | Architectural "why" for cross-module work |
+| [`documentation/project-stack.md`](documentation/project-stack.md) | Stack and directory map |
+| [`documentation/design-system.md`](documentation/design-system.md) | Tokens, component inventory, page recipes |
+| [`documentation/architecture.md`](documentation/architecture.md) | Request lifecycle, shared props, data model, routes |
+| [`documentation/migration-notes.md`](documentation/migration-notes.md) | The Blade-to-Inertia conversion record |
+| [`documentation/modules/`](documentation/modules/README.md) | One doc per module |

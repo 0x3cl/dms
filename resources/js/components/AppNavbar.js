@@ -1,0 +1,57 @@
+import { Link, usePage } from '@inertiajs/vue3';
+import { computed, defineComponent, onBeforeUnmount, onMounted, ref } from 'vue';
+import { organization } from '../organization';
+
+/**
+ * The site header, rendered outside the Inertia page so it persists across
+ * visits (see resources/js/app.js).
+ *
+ * Its copy is hardcoded in `../organization.js` rather than loaded from the
+ * database: DocTrack serves one office, so there is nothing to edit per
+ * deployment and no reason to carry PROCMIS's Pages module across for it.
+ *
+ * It measures itself and publishes its height as `--app-navbar-h` on <html>,
+ * which is what AdminShell's sticky header and fixed sidebar position against.
+ */
+export default defineComponent({
+    name: 'AppNavbar',
+    components: { Link },
+    setup() {
+        const page = usePage();
+        const isAuthenticated = computed(() => Boolean(page.props?.auth?.user));
+
+        const navbarEl = ref(null);
+        const updateNavbarHeight = () => {
+            if (navbarEl.value) {
+                document.documentElement.style.setProperty('--app-navbar-h', `${navbarEl.value.offsetHeight}px`);
+            }
+        };
+        let navbarResizeObserver = null;
+        onMounted(() => {
+            updateNavbarHeight();
+            navbarResizeObserver = new ResizeObserver(updateNavbarHeight);
+            if (navbarEl.value) navbarResizeObserver.observe(navbarEl.value);
+        });
+        onBeforeUnmount(() => navbarResizeObserver?.disconnect());
+
+        return { isAuthenticated, navbarEl, org: organization };
+    },
+    template: `
+    <header ref="navbarEl" class="border-t-7 border-slate-800 bg-linear-to-r from-[#0d5ba6] via-[#07559e] to-[#043d78] py-4 text-white print:hidden" :class="isAuthenticated ? 'sticky top-0 z-30' : 'relative z-20 shadow-lg'">
+        <nav class="mx-auto flex min-h-20 max-w-[1800px] flex-col items-center justify-between gap-5 px-5 py-3 sm:px-8 md:flex-row lg:px-12" aria-label="Site header">
+            <Link :href="isAuthenticated ? '/dashboard' : '/'" class="flex min-w-0 items-center gap-3" aria-label="Home">
+                <img :src="org.logo" :alt="org.logoAlt" class="h-14 w-14 shrink-0 object-contain" />
+                <div class="min-w-0 leading-tight">
+                    <p class="text-[11px] font-medium text-sky-100 sm:text-xs">{{ org.line1 }}</p>
+                    <p class="text-[11px] font-medium text-sky-100 sm:text-xs">{{ org.line2 }}</p>
+                    <p class="mt-1 text-sm font-bold tracking-tight sm:text-base">{{ org.line3 }}</p>
+                </div>
+            </Link>
+            <div class="border-t border-white/20 pt-4 text-center md:border-t-0 md:border-l md:pl-8 md:pt-0 md:text-right">
+                <p class="text-xs font-medium tracking-[0.18em] text-sky-200 uppercase">{{ org.label }}</p>
+                <p class="mt-1 text-lg font-semibold tracking-tight sm:text-xl">{{ org.title }}</p>
+            </div>
+        </nav>
+    </header>
+`,
+});

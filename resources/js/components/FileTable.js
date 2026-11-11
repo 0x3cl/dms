@@ -1,0 +1,129 @@
+import { Link } from '@inertiajs/vue3';
+import { defineComponent } from 'vue';
+import ActionMenu from './ActionMenu';
+import Badge from './Badge';
+import FileIcon from './FileIcon';
+import { formatTimestamp } from '../utils/format-date';
+import { accessBadge, readableSize, rowActions } from '../utils/file-rows';
+
+/**
+ * The table view.
+ *
+ * Renders the same `files` paginator page and `folders` collection the grid
+ * does — one query, so the two views cannot disagree about counts or contents.
+ *
+ * Sortable headers are new to this codebase: no controller read a `sort`
+ * parameter before, and no table header was clickable. The column whitelist
+ * lives server-side in FileManagerController.
+ */
+export default defineComponent({
+    name: 'FileTable',
+    components: { ActionMenu, Badge, FileIcon, Link },
+    emits: ['open', 'preview', 'act', 'sort'],
+    props: {
+        folders: { type: Array, default: () => [] },
+        files: { type: Array, default: () => [] },
+        folderHref: { type: Function, required: true },
+        sort: { type: String, default: 'name' },
+        direction: { type: String, default: 'asc' },
+        selected: { type: Array, default: () => [] },
+        selectable: { type: Boolean, default: true },
+        /**
+         * 'browse' or 'trash'. The trash renders the same two views over the
+         * same payload shape and only the action list differs, which is what
+         * gives the Trash page a grid and a table without a second listing
+         * component to keep in step.
+         */
+        mode: { type: String, default: 'browse' },
+    },
+    setup(props, { emit }) {
+        // Both views share one definition of these — see utils/file-rows.js for
+        // why they are not written out here twice.
+        const actionsFor = (item, kind) => rowActions(item, kind, props.mode);
+
+        const headerIcon = (column) => {
+            if (props.sort !== column) return 'fa-solid fa-sort text-slate-300';
+            return props.direction === 'asc' ? 'fa-solid fa-sort-up' : 'fa-solid fa-sort-down';
+        };
+
+        const isSelected = (publicId) => props.selected.includes(publicId);
+        const act = (item, kind, action) => emit('act', { item, kind, action: action.key });
+
+        return { accessBadge, act, actionsFor, formatTimestamp, headerIcon, isSelected, readableSize };
+    },
+    template: `
+    <div class="mt-6 overflow-x-auto">
+        <table class="w-full min-w-[980px] text-left">
+            <thead class="border-y border-slate-200 text-xs uppercase tracking-wide text-slate-500">
+                <tr>
+                    <th v-if="selectable" class="w-10 px-4 py-4"><span class="sr-only">Select</span></th>
+                    <th class="px-4 py-4">
+                        <button type="button" class="inline-flex items-center gap-2 uppercase tracking-wide" @click="$emit('sort', 'name')">Name <i :class="headerIcon('name')" aria-hidden="true"></i></button>
+                    </th>
+                    <th class="px-4 py-4">{{ mode === 'trash' ? 'Restores to' : 'Privacy' }}</th>
+                    <th class="px-4 py-4">Owner</th>
+                    <th class="px-4 py-4">
+                        <button type="button" class="inline-flex items-center gap-2 uppercase tracking-wide" @click="$emit('sort', 'size')">Size <i :class="headerIcon('size')" aria-hidden="true"></i></button>
+                    </th>
+                    <th class="px-4 py-4">
+                        <button type="button" class="inline-flex items-center gap-2 uppercase tracking-wide" @click="$emit('sort', mode === 'trash' ? 'deleted' : 'updated')">{{ mode === 'trash' ? 'Deleted' : 'Modified' }} <i :class="headerIcon(mode === 'trash' ? 'deleted' : 'updated')" aria-hidden="true"></i></button>
+                    </th>
+                    <th class="px-4 py-4 text-right">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr v-for="folder in folders" :key="'folder-' + folder.public_id" class="border-b border-slate-100 hover:bg-sky-50/50">
+                    <td v-if="selectable" class="px-4 py-4"></td>
+                    <td class="px-4 py-4">
+                        <Link :href="folderHref(folder.public_id)" class="inline-flex items-center gap-3 font-bold text-slate-800 hover:text-[#07559e]">
+                            <FileIcon folder size="sm" />{{ folder.name }}
+                        </Link>
+                    </td>
+                    <td class="px-4 py-4">
+                        <span v-if="mode === 'trash'" class="text-sm text-slate-600">{{ folder.restores_to }}</span>
+                        <Badge v-else :tone="folder.visibility_tone">{{ folder.visibility_label }}</Badge>
+                    </td>
+                    <td class="px-4 py-4 text-slate-600">
+                        {{ folder.is_mine ? 'Me' : folder.owner_name }}
+                        <span v-if="accessBadge(folder)?.highlight" class="ml-1 text-xs text-emerald-700" :title="accessBadge(folder).hint"><i class="fa-solid fa-share-nodes" aria-hidden="true"></i></span>
+                    </td>
+                    <td class="px-4 py-4 text-slate-400">{{ mode === 'trash' ? folder.contains.files + ' files' : '—' }}</td>
+                    <td class="px-4 py-4 text-slate-600">{{ formatTimestamp(mode === 'trash' ? folder.deleted_at : folder.updated_at) }}</td>
+                    <td class="whitespace-nowrap px-4 py-4 text-right">
+                        <ActionMenu v-if="actionsFor(folder, 'folder').length" :items="actionsFor(folder, 'folder')" @select="act(folder, 'folder', $event)" />
+                    </td>
+                </tr>
+                <tr v-for="(file, fileIndex) in files" :data-tour="fileIndex === 0 ? 'file-row' : null" :key="'file-' + file.public_id" class="border-b border-slate-100 hover:bg-sky-50/50">
+                    <td v-if="selectable" class="px-4 py-4">
+                        <label class="inline-flex items-center">
+                            <span class="sr-only">Select {{ file.name }}</span>
+                            <input type="checkbox" class="h-4 w-4 rounded border-slate-300 accent-[#07559e]" :checked="isSelected(file.public_id)" @change="$emit('open', { item: file, kind: 'file', action: 'select' })" />
+                        </label>
+                    </td>
+                    <td class="px-4 py-4">
+                        <button type="button" class="inline-flex items-center gap-3 text-left font-bold text-slate-800 hover:text-[#07559e] disabled:text-slate-800 disabled:hover:text-slate-800" :disabled="mode === 'trash'" @click="$emit('preview', file)">
+                            <FileIcon :mime-type="file.mime_type" size="sm" />{{ file.name }}
+                        </button>
+                    </td>
+                    <td class="px-4 py-4">
+                        <span v-if="mode === 'trash'" class="text-sm text-slate-600">{{ file.restores_to }}</span>
+                        <Badge v-else :tone="file.visibility_tone">{{ file.visibility_label }}</Badge>
+                    </td>
+                    <td class="px-4 py-4 text-slate-600">
+                        {{ file.is_mine ? 'Me' : file.owner_name }}
+                        <span v-if="accessBadge(file)?.highlight" class="ml-1 text-xs text-emerald-700" :title="accessBadge(file).hint"><i class="fa-solid fa-share-nodes" aria-hidden="true"></i></span>
+                    </td>
+                    <td class="px-4 py-4 text-slate-600">{{ readableSize(file.size) }}</td>
+                    <td class="px-4 py-4 text-slate-600">{{ formatTimestamp(mode === 'trash' ? file.deleted_at : file.updated_at) }}</td>
+                    <td class="whitespace-nowrap px-4 py-4 text-right">
+                        <ActionMenu v-if="actionsFor(file, 'file').length" :items="actionsFor(file, 'file')" @select="act(file, 'file', $event)" />
+                    </td>
+                </tr>
+                <tr v-if="folders.length === 0 && files.length === 0">
+                    <td :colspan="selectable ? 7 : 6" class="px-4 py-12 text-center text-slate-500">Nothing here yet.</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+`,
+});

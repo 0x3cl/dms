@@ -44,6 +44,29 @@ return [
             'throw' => false,
         ],
 
+        /*
+         * Uploaded documents and file-manager files.
+         *
+         * Private, and with no entry in `links` below, so nothing under it is
+         * reachable over the web at any URL. Every byte is served by a
+         * controller that has already resolved permission — see
+         * App\Http\Controllers\FileStreamController.
+         *
+         * Documents used to live on the `public` disk, which meant every
+         * uploaded file was fetchable at /storage/documents/<hash>.pdf with no
+         * authorization check at all.
+         *
+         * `throw => true` on purpose: the `public` disk's silent `false` on a
+         * failed write is how a file that was never stored turns into a
+         * confusing 404 much later, at download time.
+         */
+        'documents' => [
+            'driver' => 'local',
+            'root' => storage_path('app/private/documents'),
+            'visibility' => 'private',
+            'throw' => true,
+        ],
+
         's3' => [
             'driver' => 's3',
             'key' => env('AWS_ACCESS_KEY_ID'),

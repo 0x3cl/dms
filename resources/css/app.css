@@ -1,3 +1,876 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/*
+ * DocTrack (DMS) design system.
+ *
+ * Ported from PROCMIS v2 so the two systems read as one product family. The
+ * whole visual language lives in this file: the brand tokens, the form-field
+ * and error base classes, and the dark theme. See documentation/design-system.md.
+ *
+ * Tailwind 4 is configured CSS-first through @theme below — there is no
+ * tailwind.config.js, and adding one would be ignored.
+ */
+@import 'tailwindcss';
+
+@import '@fortawesome/fontawesome-free/css/fontawesome.css';
+@import '@fortawesome/fontawesome-free/css/solid.css';
+@import '@fortawesome/fontawesome-free/css/regular.css';
+
+@import '@fontsource/poppins/400.css';
+@import '@fontsource/poppins/500.css';
+@import '@fontsource/poppins/600.css';
+@import '@fontsource/poppins/700.css';
+
+@layer base {
+    /*
+     * A table inside a horizontally scrollable wrapper scrolls rather than
+     * wraps. A name, a role badge or a division broken across three lines is
+     * harder to scan than a sideways scroll, and it makes every row a
+     * different height.
+     *
+     * Two deliberate escapes: a cell that is meant to wrap carries a
+     * whitespace utility (whitespace-normal, whitespace-pre-line), which wins
+     * because Tailwind's utilities sit in a later layer than base; and a
+     * table-fixed layout is left alone entirely, since wrapping into fixed
+     * columns is the whole point of it.
+     *
+     * Scoped to .overflow-x-auto on purpose — a table with no scrollable
+     * wrapper would overflow the page instead of scrolling.
+     */
+    .overflow-x-auto table:not(.table-fixed) th,
+    .overflow-x-auto table:not(.table-fixed) td {
+        white-space: nowrap;
+    }
+
+    a[href],
+    button:not(:disabled),
+    select:not(:disabled),
+    input[type='checkbox']:not(:disabled),
+    input[type='radio']:not(:disabled) {
+        cursor: pointer;
+    }
+
+    /*
+     * A <select> is as wide as its longest <option> unless it is told
+     * otherwise, and a grid or flex item defaults to min-width:auto — so one
+     * long option (a project's code plus its full name, say) stretches its
+     * column and scrolls the whole page sideways. Capping the control and
+     * letting its container shrink makes the browser ellipsize the chosen
+     * option instead, which is what every one of these fields wants.
+     */
+    label:has(> select),
+    div:has(> select) {
+        min-width: 0;
+    }
+
+    select {
+        max-width: 100%;
+        min-width: 0;
+        text-overflow: ellipsis;
+        appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%2307559e'%3E%3Cpath fill-rule='evenodd' d='M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z' clip-rule='evenodd'/%3E%3C/svg%3E");
+        background-position: right 1.125rem center;
+        background-repeat: no-repeat;
+        background-size: 0.875rem;
+        padding-right: 3.5rem !important;
+    }
+
+    .required-label::after {
+        color: var(--color-rose-600);
+        content: ' *';
+    }
+
+    .field {
+        @apply mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 outline-none transition focus:border-[#00aeef] focus:ring-4 focus:ring-sky-100;
+    }
+
+    /*
+     * Every control on a form row is the same height, so a grid row holding a
+     * text input beside a select or an upload field lines up instead of
+     * stepping. Left to themselves the three disagree: a text input comes to
+     * 50px, a SearchableSelect to 46px (its label is text-sm), and a file
+     * input to 58px.
+     *
+     * Scoped to input and select on purpose — a textarea also carries .field
+     * and must stay free to grow with its rows attribute.
+     *
+     * SearchableSelect is not a native control, so it carries the matching
+     * min-h-[50px] in the component itself; change the two together.
+     */
+    input.field,
+    select.field {
+        height: 3.125rem; /* 50px */
+    }
+
+    /*
+     * A file input needs padding of its own: the browser's "Browse…" button is
+     * a box inside the control with its own padding, which stacks on .field's
+     * and is what makes an upload field tower over its neighbours. 8px is what
+     * is left once that 32px button is accounted for, so the total still comes
+     * to the same 50px. Keep this in step with the file: utilities on the
+     * input (see resources/js/pages/documents/form.js).
+     */
+    input.field[type='file'] {
+        @apply py-2 text-sm;
+    }
+
+    .error {
+        @apply mt-1 text-sm text-rose-600;
+    }
+
+    label:has(input[aria-invalid]):not(:has(.required-label)) > span::after {
+        color: var(--color-rose-600);
+        content: ' *';
+    }
+}
+
+@source '../../storage/framework/views/*.php';
+
+@theme {
+    --font-sans: 'Poppins', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+        'Segoe UI Symbol', 'Noto Color Emoji';
+
+    /* Brand tokens: #00aeef is the primary action color (buttons, active
+       tab underline), #07559e is the accent/label color (eyebrow labels,
+       active tab text). Matches the majority usage already in the app. */
+    --color-brand-primary: #00aeef;
+    --color-brand-primary-hover: #009bd8;
+    --color-brand-accent: #07559e;
+}
+
+/*
+ * Table skeleton: while a search, filter or pagination request is in flight
+ * (see NavigationSkeleton.js, which sets data-fetching on <html>), every
+ * table row — and any block marked data-skeleton — is swapped for pulsing
+ * placeholder bars instead of showing stale rows or going blank.
+ */
+@keyframes skeleton-pulse {
+    50% {
+        opacity: 0.45;
+    }
+}
+
+html[data-fetching] tbody td,
+html[data-fetching] [data-skeleton] {
+    position: relative;
+    color: transparent;
+    pointer-events: none;
+}
+
+html[data-fetching] tbody td > *,
+html[data-fetching] [data-skeleton] > * {
+    visibility: hidden;
+}
+
+html[data-fetching] tbody td::after,
+html[data-fetching] [data-skeleton]::after {
+    content: '';
+    position: absolute;
+    inset: 50% 1rem auto;
+    height: 0.875rem;
+    transform: translateY(-50%);
+    border-radius: 0.25rem;
+    background: #e2e8f0;
+    animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+html[data-fetching] [data-skeleton]::after {
+    inset: 50% 1rem auto;
+    height: 1.25rem;
+}
+
+/*
+ * Inner top/bottom shadows on a scrollable panel (the admin sidebar) that
+ * only show while there is more content to scroll in that direction: the
+ * white "local" covers scroll with the content and hide the fixed "scroll"
+ * shadows once an edge is reached.
+ */
+.scroll-shadows {
+    background:
+        linear-gradient(#fff 30%, rgb(255 255 255 / 0)) center top / 100% 2.5rem no-repeat local,
+        linear-gradient(rgb(255 255 255 / 0), #fff 70%) center bottom / 100% 2.5rem no-repeat local,
+        radial-gradient(farthest-side at 50% 0, rgb(15 23 42 / 0.16), rgb(15 23 42 / 0)) center top / 100% 0.875rem no-repeat scroll,
+        radial-gradient(farthest-side at 50% 100%, rgb(15 23 42 / 0.16), rgb(15 23 42 / 0)) center bottom / 100% 0.875rem no-repeat scroll,
+        #fff;
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Dark theme
+ * ---------------------------------------------------------------------------
+ *
+ * Every Tailwind v4 color utility compiles to `var(--color-<family>-<shade>)`,
+ * so remapping those variables under `html.dark` flips the whole application
+ * without touching a single class in the 200 files under resources/js. A
+ * utility keeps its *intent* — bg-slate-50 is still "the page", text-slate-900
+ * still "the strongest text" — and only the value it resolves to changes.
+ *
+ * The surfaces are a soft, slightly blue charcoal rather than near-black, and
+ * the brightest text stops short of pure white: a full black-to-white range is
+ * tiring to read against for a day at a time.
+ *
+ * The neutral ramp is inverted end to end, while an accent family only has its
+ * tint end (50-200, the badge and panel fills) and its text end (700-900)
+ * swapped; 300-600 are the solid, mid-strength colors that already carry white
+ * text, so they keep their values.
+ *
+ * These rules sit outside @layer on purpose: Tailwind's utilities live in
+ * @layer utilities, and unlayered CSS wins over layered CSS regardless of
+ * specificity, which is what lets the class overrides further down beat the
+ * utility they are correcting.
+ */
+html.dark {
+    /*
+     * Tells the browser to render its own chrome dark too: scrollbars, the
+     * date picker's calendar, select dropdowns and autofill. Without it those
+     * stay light and sit as bright rectangles on the page.
+     */
+    color-scheme: dark;
+
+    /* Neutrals: 50 is the page, 200-300 are borders, 600+ is text. */
+    --color-slate-50: #182130;
+    --color-slate-100: #1f2a3a;
+    --color-slate-200: #2b3849;
+    --color-slate-300: #45566d;
+    --color-slate-400: #8b99ab;
+    --color-slate-500: #a3b0c0;
+    --color-slate-600: #c8d2de;
+    --color-slate-700: #dde4ec;
+    --color-slate-800: #e7edf4;
+    --color-slate-900: #eef3f9;
+    --color-slate-950: #f5f8fb;
+
+    --color-amber-50: #2d2311;
+    --color-amber-100: #3a2d15;
+    --color-amber-200: #4d3c1c;
+    --color-amber-700: #fcd34d;
+    --color-amber-800: #fde68a;
+    --color-amber-900: #fef3c7;
+
+    --color-emerald-50: #102c24;
+    --color-emerald-100: #16392e;
+    --color-emerald-200: #1d4c3c;
+    --color-emerald-700: #6ee7b7;
+    --color-emerald-800: #a7f3d0;
+    --color-emerald-900: #d1fae5;
+
+    --color-rose-50: #311620;
+    --color-rose-100: #3f1d29;
+    --color-rose-200: #542838;
+    --color-rose-700: #fda4af;
+    --color-rose-800: #fecdd3;
+    --color-rose-900: #ffe4e6;
+
+    --color-red-700: #fca5a5;
+
+    --color-sky-50: #122b3c;
+    --color-sky-100: #17374c;
+    --color-sky-200: #1d4862;
+    --color-sky-700: #7dd3fc;
+    --color-sky-800: #bae6fd;
+
+    --color-cyan-100: #123539;
+    --color-cyan-700: #67e8f9;
+
+    --color-indigo-50: #1e1d38;
+    --color-indigo-100: #272547;
+    --color-indigo-200: #353161;
+    --color-indigo-700: #a5b4fc;
+
+    --color-violet-50: #221a3a;
+    --color-violet-100: #2c224a;
+    --color-violet-200: #3b2e63;
+    --color-violet-700: #c4b5fd;
+    --color-violet-900: #ede9fe;
+    --color-violet-950: #f5f3ff;
+
+    --color-orange-50: #301f10;
+    --color-orange-100: #3e2814;
+    --color-orange-200: #52351a;
+    --color-orange-700: #fdba74;
+    --color-orange-800: #fed7aa;
+    --color-orange-900: #ffedd5;
+}
+
+/*
+ * Most text in this application carries no color class at all and inherits the
+ * browser's default black — a heading, a table cell, an input's own value. On
+ * white that is correct and invisible as a decision; on a dark surface it is
+ * black on charcoal. This default is what makes those readable, and Tailwind's
+ * preflight (`color: inherit` on form controls) carries it into inputs,
+ * selects and textareas, with ::placeholder following from currentColor.
+ */
+html.dark body {
+    background-color: #182130;
+    color: #dde4ec;
+}
+
+/*
+ * `--color-white` is deliberately NOT remapped: it serves two opposite roles.
+ * As a background (bg-white, 412 uses) it is a card surface that must go dark;
+ * as a foreground (text-white, 215 uses) it is the label on a solid brand
+ * button, which must stay white or those buttons become unreadable. So the
+ * surface is corrected per utility instead, and text-white is left alone.
+ *
+ * The low-alpha whites (bg-white/15 and below) are translucent overlays on
+ * photographs in the landing hero and are correct as they are.
+ */
+html.dark .bg-white {
+    background-color: #202b3b;
+}
+
+html.dark .bg-white\/95,
+html.dark .bg-white\/90,
+html.dark .bg-white\/80,
+html.dark .bg-white\/70 {
+    background-color: #202b3be6;
+}
+
+/*
+ * A dark slate *background* is a dark surface that already carries light text —
+ * a modal scrim, the timeline tooltip, the Setup Checker's terminal block, a
+ * solid dark button. Inverting those turns every dialog overlay white, so the
+ * background utilities keep dark values while text-slate-700..950 stay
+ * inverted, which is what makes body copy legible.
+ */
+html.dark .bg-slate-700 {
+    background-color: #2b3849;
+}
+
+html.dark .bg-slate-800 {
+    background-color: #1c2634;
+}
+
+html.dark .bg-slate-900 {
+    background-color: #141c29;
+}
+
+html.dark .bg-slate-900\/40 {
+    background-color: #0c1119a6;
+}
+
+html.dark .bg-slate-950\/35,
+html.dark .bg-slate-950\/40,
+html.dark .bg-slate-950\/45 {
+    background-color: #08121ca6;
+}
+
+html.dark .bg-slate-950\/50,
+html.dark .bg-slate-950\/60 {
+    background-color: #08121cbf;
+}
+
+/*
+ * And a light *text* shade is a label on a solid brand panel — the dashboard's
+ * KPI tiles, the monitoring header — not a tint that should follow the page.
+ * Inverting those makes the caption disappear into the blue behind it.
+ */
+html.dark .text-slate-100 {
+    color: #f1f5f9;
+}
+
+html.dark .text-sky-50 {
+    color: #f0f9ff;
+}
+
+html.dark .text-sky-100 {
+    color: #e0f2fe;
+}
+
+html.dark .text-sky-200 {
+    color: #bae6fd;
+}
+
+html.dark .text-emerald-100 {
+    color: #d1fae5;
+}
+
+/*
+ * The 500/600 shades are mid-strength on purpose: strong enough to read as a
+ * color on white. On a dark surface they are the darkest thing on the panel,
+ * and text-rose-600 is every form's validation message, so each is lifted to
+ * its 400 shade rather than left at roughly 3:1 against the card.
+ */
+html.dark .text-rose-600 {
+    color: #fb7185;
+}
+
+html.dark .text-red-600 {
+    color: #f87171;
+}
+
+html.dark .text-emerald-600 {
+    color: #34d399;
+}
+
+html.dark .text-amber-600 {
+    color: #fbbf24;
+}
+
+html.dark .text-orange-600 {
+    color: #fb923c;
+}
+
+html.dark .text-violet-600 {
+    color: #a78bfa;
+}
+
+html.dark .text-sky-600 {
+    color: #38bdf8;
+}
+
+/*
+ * The brand navy reads as a mid-dark blue, which is a text color only on a
+ * light surface. On a dark one it has to come up to meet the background; the
+ * cyan (#00aeef) is already bright enough to leave alone. The solid
+ * bg-[#07559e] / bg-[#00aeef] buttons also stay as they are — they carry
+ * text-white and work on either theme.
+ */
+html.dark .text-\[\#07559e\] {
+    color: #74bbf0;
+}
+
+html.dark .text-\[\#07559e\]\/70 {
+    color: #74bbf0b3;
+}
+
+html.dark .text-\[\#043d78\],
+html.dark .text-\[\#4b78b5\],
+html.dark .text-\[\#6f8fbb\] {
+    color: #9acdf5;
+}
+
+html.dark .border-\[\#07559e\] {
+    border-color: #4a8ac7;
+}
+
+html.dark .accent-\[\#07559e\] {
+    accent-color: #00aeef;
+}
+
+/*
+ * Light surfaces painted with a literal hex rather than a palette color: no
+ * variable reaches them, so each is corrected by hand.
+ *
+ * The footer's gradient and the navbar's top rule are the two chrome pieces
+ * that frame every page. The navbar's rule is `border-slate-800`, a
+ * deliberately dark accent on a blue header rather than "strong text" — the
+ * inverted neutral ramp turns it into a bright band across the top of the
+ * window, which is what this undoes. It is the only border-t-7 in the app.
+ */
+html.dark .border-t-7 {
+    border-top-color: #141c29;
+}
+
+html.dark .from-\[\#f7fbff\] {
+    --tw-gradient-from: #1b2534;
+}
+
+html.dark .via-\[\#eef7ff\] {
+    --tw-gradient-via: #1f2b3c;
+}
+
+html.dark .to-\[\#f8fcff\] {
+    --tw-gradient-to: #1b2534;
+}
+
+/*
+ * The <select> chevron is an inlined SVG whose fill is baked into the data
+ * URI, so it cannot follow a variable; the navy one all but disappears on a
+ * dark field.
+ */
+html.dark select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%2374bbf0'%3E%3Cpath fill-rule='evenodd' d='M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z' clip-rule='evenodd'/%3E%3C/svg%3E");
+}
+
+/*
+ * Hand-written rules elsewhere in this file paint literal colors, so unlike a
+ * utility they do not follow the remapped palette and have to be restated.
+ *
+ * The sidebar's scroll shadows fade *to* its own surface, so the base and the
+ * two "local" gradients have to match the dark card color or the panel ends up
+ * with a pale haze at each scrolling edge.
+ */
+html.dark .scroll-shadows {
+    background:
+        linear-gradient(#202b3b 30%, rgb(32 43 59 / 0)) center top / 100% 2.5rem no-repeat local,
+        linear-gradient(rgb(32 43 59 / 0), #202b3b 70%) center bottom / 100% 2.5rem no-repeat local,
+        radial-gradient(farthest-side at 50% 0, rgb(0 0 0 / 0.45), rgb(0 0 0 / 0)) center top / 100% 0.875rem no-repeat scroll,
+        radial-gradient(farthest-side at 50% 100%, rgb(0 0 0 / 0.45), rgb(0 0 0 / 0)) center bottom / 100% 0.875rem no-repeat scroll,
+        #202b3b;
+}
+
+html.dark[data-fetching] [data-skeleton]::after {
+    background: #2b3849;
+}
+
+
+
+/*
+ * A placeholder is `currentColor` at 50% alpha by default, which lands around
+ * 3.5:1 on a dark field — technically present, practically not. Pinning it
+ * keeps it clearly a placeholder without making it guesswork.
+ */
+html.dark ::placeholder {
+    color: #8b99ab;
+    opacity: 1;
+}
+
+/*
+ * The last three the contrast scan flagged against the card and page surfaces.
+ * text-slate-300 is the faint separator between inline facts ("requestor ·
+ * division") and a zeroed count; the neutral ramp puts slate-300 at border
+ * strength, which is right for border-slate-300 but invisible as text, so only
+ * the text utility is lifted and the shared variable is left alone.
+ */
+html.dark .text-slate-300 {
+    color: #7b8a9f;
+}
+
+html.dark .text-rose-500 {
+    color: #fb7185;
+}
+
+html.dark .text-violet-500 {
+    color: #a78bfa;
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Theme swap animation
+ * ---------------------------------------------------------------------------
+ *
+ * The swap is a View Transition: the browser snapshots the page before and
+ * after the `dark` class is toggled and cross-fades the two images. Because it
+ * animates pictures of the page rather than each element's own properties,
+ * nothing can fall out of step — a border cannot snap while the fill behind it
+ * is still fading, which is the artifact every per-element approach produced.
+ *
+ * That is also why the earlier approach could not be made to work everywhere.
+ * These colors all resolve through `var(--color-*)`, and a transition on a
+ * property whose custom property changed underneath it is not handled the same
+ * way across engines: some interpolate, some jump. Whichever properties an
+ * engine declines to interpolate, those snap while the rest fade, and the
+ * outlines come back. Snapshots sidestep custom properties entirely.
+ *
+ * Browsers without the API swap instantly (see resources/js/preferences.js),
+ * which has no intermediate state to flash either.
+ */
+::view-transition-old(root),
+::view-transition-new(root) {
+    animation-duration: 250ms;
+    animation-timing-function: ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    ::view-transition-old(root),
+    ::view-transition-new(root) {
+        animation: none;
+    }
+}
+
+
+/*
+ * Tailwind's preflight leaves `border-color` at its initial value, which CSS
+ * defines as `currentColor`. An element with a width but no border-* color
+ * class therefore borrows the text color — fine on white, where the text is
+ * near-black and the border reads as a normal hairline, but in dark mode the
+ * text is near-white, so those 21 elements (a Setup Checker panel, the
+ * supplier dashboard's cards, a Master Editor avatar ring) draw a bright
+ * outline instead.
+ *
+ * This restores a sensible default for them. It sits in @layer base so that
+ * every border-slate-200 and the like, which live in @layer utilities, still
+ * win: later layers beat earlier ones no matter the specificity.
+ */
+@layer base {
+    html.dark *,
+    html.dark ::before,
+    html.dark ::after {
+        border-color: #2b3849;
+    }
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Guided tours (driver.js) and the mascot
+ * ---------------------------------------------------------------------------
+ *
+ * Ported from PROCMIS so the two systems read as one product family, with the
+ * class prefix changed to `.doctrack-tour` — a shared prefix would imply a
+ * shared stylesheet that does not exist.
+ *
+ * These sit outside `@layer` like the dark-theme rules, because driver.js
+ * injects its own styles at runtime and unlayered CSS beats layered CSS
+ * regardless of specificity.
+ *
+ * `resources/js/tutorials/mascot.js` depends on the mascot box being 150x180;
+ * change one and change the other.
+ */
+/*
+ * driver.js tour popovers (resources/js/tutorials/), restyled to match the app's
+ * cards and buttons: Poppins, slate text, brand-blue uppercase title, and the
+ * same primary/secondary button look used across the admin pages.
+ */
+.driver-popover.doctrack-tour {
+    --driver-popover-font-family: var(--font-sans);
+    width: 22rem;
+    max-width: calc(100vw - 2rem);
+    padding: 1.25rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 0.75rem;
+    color: #334155;
+    box-shadow: 0 10px 25px -5px rgb(15 23 42 / 0.2), 0 4px 10px -6px rgb(15 23 42 / 0.15);
+}
+
+.driver-popover.doctrack-tour .driver-popover-title {
+    padding-right: 2rem;
+    color: #07559e;
+    font-size: 0.875rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    line-height: 1.4;
+    text-transform: uppercase;
+}
+
+.driver-popover.doctrack-tour .driver-popover-description {
+    margin-top: 0.5rem;
+    color: #475569;
+    font-size: 0.875rem;
+    line-height: 1.6;
+}
+
+.driver-popover.doctrack-tour .driver-popover-description strong {
+    color: #0f172a;
+    font-weight: 700;
+}
+
+.driver-popover.doctrack-tour .driver-popover-close-btn {
+    top: 0.75rem;
+    right: 0.75rem;
+    display: flex;
+    width: 1.75rem;
+    height: 1.75rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9999px;
+    color: #94a3b8;
+    font-size: 1.25rem;
+    line-height: 1;
+}
+
+.driver-popover.doctrack-tour .driver-popover-close-btn:hover,
+.driver-popover.doctrack-tour .driver-popover-close-btn:focus-visible {
+    background-color: #f1f5f9;
+    color: #334155;
+}
+
+.driver-popover.doctrack-tour .driver-popover-footer {
+    margin-top: 1.25rem;
+    padding-top: 1rem;
+    border-top: 1px solid #f1f5f9;
+}
+
+.driver-popover.doctrack-tour .driver-popover-navigation-btns {
+    gap: 0.5rem;
+}
+
+.driver-popover.doctrack-tour .driver-popover-navigation-btns button + button {
+    margin-left: 0;
+}
+
+.driver-popover.doctrack-tour .driver-popover-footer-btn {
+    padding: 0.5rem 1rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 0.5rem;
+    background-color: #fff;
+    color: #334155;
+    font-size: 0.8125rem;
+    font-weight: 700;
+    line-height: 1.25;
+    text-shadow: none;
+    transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.driver-popover.doctrack-tour .driver-popover-footer-btn:hover,
+.driver-popover.doctrack-tour .driver-popover-footer-btn:focus-visible {
+    border-color: #07559e;
+    background-color: #fff;
+    color: #07559e;
+}
+
+.driver-popover.doctrack-tour .driver-popover-next-btn {
+    border-color: #00aeef;
+    background-color: #00aeef;
+    color: #fff;
+}
+
+.driver-popover.doctrack-tour .driver-popover-next-btn:hover,
+.driver-popover.doctrack-tour .driver-popover-next-btn:focus-visible {
+    border-color: #009bd8;
+    background-color: #009bd8;
+    color: #fff;
+}
+
+/*
+ * There is nothing to go back to on a page's first step, so hide the disabled Back button.
+ * driver.js sets the button's display inline, hence !important.
+ */
+.driver-popover.doctrack-tour .driver-popover-prev-btn.driver-popover-btn-disabled {
+    display: none !important;
+}
+
+/* A slightly larger arrow so it reads clearly against the dimmed backdrop. */
+.driver-popover.doctrack-tour .driver-popover-arrow {
+    border-width: 7px;
+}
+
+/* "Step X of Y" label above the popover title, in the app's small uppercase label style. */
+
+/* "Sample data" tag on the left of the popover's buttons while a tutorial displays made-up records (full sentence on hover). */
+
+/*
+ * Narrow screens. The popover is a fixed 22rem panel positioned by driver.js against
+ * the highlighted element; on a phone that is most of the width, leaving the footer
+ * buttons cramped onto one line and the text squeezed beside the arrow. Below 40rem
+ * it fills the width it is given, tightens its padding, and lets the buttons wrap so
+ * Back/Next stay full-size tap targets instead of shrinking.
+ */
+@media (max-width: 40rem) {
+    .driver-popover.doctrack-tour {
+        width: auto;
+        min-width: 0;
+        max-width: calc(100vw - 1.5rem);
+        padding: 1rem;
+    }
+
+    /*
+     * A long step on a short screen (a phone held sideways) would push the
+     * footer buttons off the bottom with no way to reach them: the description
+     * scrolls instead, so the title, "Step X of Y" and Back/Next stay on
+     * screen. The popover itself can't scroll — its arrow sits outside its box
+     * and would be clipped.
+     */
+    .driver-popover.doctrack-tour .driver-popover-description {
+        max-height: 45vh;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        font-size: 0.8125rem;
+    }
+
+    .driver-popover.doctrack-tour .driver-popover-footer {
+        margin-top: 1rem;
+        padding-top: 0.75rem;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+    }
+
+    /* Keep the pair on the right, as on a wide screen. */
+    .driver-popover.doctrack-tour .driver-popover-navigation-btns {
+        margin-left: auto;
+    }
+
+    /* The sample-data tag pushes the buttons off the row on a narrow popover. */
+
+    /*
+     * A comfortable tap target, but still sized to its label: stretching the
+     * buttons across the row leaves a lone "Next" filling the popover, which
+     * reads as a banner rather than a button.
+     */
+    .driver-popover.doctrack-tour .driver-popover-footer-btn {
+        min-height: 2.75rem;
+        padding: 0.5rem 1.25rem;
+    }
+}
+
+/*
+ * The guided-tour mascot (resources/js/tutorials/mascot.js): one element appended to the body for
+ * the whole session, standing beside the driver.js popover. JS sets only its position, which side
+ * it faces, and the pose image; everything that moves lives here.
+ *
+ * - the wrapper fades out and back in between steps, and is repositioned while invisible, so the
+ *   mascot is never seen travelling towards a popover driver.js has not placed yet,
+ * - `__flip` turns it to face the popover, so the mirrored side needs no mirrored keyframes,
+ * - the image breathes on the spot while it is standing there, and not otherwise.
+ *
+ * Changing step must move nothing at all — only opacity. Keep `transform` out of the wrapper's
+ * transition (gliding sent the mascot off towards the previous popover and back on every Next), and
+ * don't give the image an entrance animation: it fades in while hopping, which reads as a glitch
+ * rather than a landing. `FADE_OUT_MS` in mascot.js matches the opacity duration here.
+ */
+.doctrack-tour-mascot {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 999999;
+    display: flex;
+    width: 150px;
+    height: 180px;
+    align-items: flex-end;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.16s ease-in;
+    will-change: opacity;
+}
+
+/* Quick to leave, softer to arrive, so the gap between steps is as short as it can be. */
+.doctrack-tour-mascot.is-visible {
+    opacity: 1;
+    transition: opacity 0.26s ease-out;
+}
+
+.doctrack-tour-mascot__flip {
+    display: flex;
+    height: 100%;
+    align-items: flex-end;
+}
+
+.doctrack-tour-mascot.is-mirrored .doctrack-tour-mascot__flip {
+    transform: scaleX(-1);
+}
+
+/*
+ * The image fills the box and is letterboxed into it, rather than being sized by its own width and
+ * height: the poses have different proportions, so an auto-sized image re-lays-out the moment its
+ * `src` changes, and that reflow is visible as the mascot twitching as it changes.
+ */
+.doctrack-tour-mascot img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: center bottom;
+    /* The bob reads as weight only from the ground the mascot stands on. */
+    transform-origin: 50% 100%;
+    filter: drop-shadow(0 5px 9px rgb(15 23 42 / 0.3));
+}
+
+/*
+ * Breathing on the spot, and only while the mascot is on screen. Its resting frame is an untouched
+ * transform, so starting and stopping it moves nothing: a bob that rested anywhere else would snap
+ * into or out of that offset as the mascot faded, which is exactly what should not be visible.
+ */
+.doctrack-tour-mascot.is-visible img {
+    animation: doctrack-mascot-idle 3.4s ease-in-out infinite;
+}
+
+@keyframes doctrack-mascot-idle {
+    0%, 100% { transform: translateY(0) rotate(0deg); }
+    50% { transform: translateY(-6px) rotate(2deg); }
+}
+
+/*
+ * No room beside the popover on a phone — it already fills the width — and the runner stops
+ * following at the same breakpoint.
+ */
+@media (max-width: 40rem) {
+    .doctrack-tour-mascot {
+        display: none;
+    }
+}
+
+/* The mascot still appears beside each step in its own pose; only the bob goes away. */
+@media (prefers-reduced-motion: reduce) {
+    .doctrack-tour-mascot.is-visible img {
+        animation: none;
+    }
+}

@@ -5,8 +5,6 @@ namespace App\Notifications;
 use App\Models\Document;
 use App\Models\User;
 use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 
 class PrivateDocumentShared extends Notification
@@ -14,6 +12,7 @@ class PrivateDocumentShared extends Notification
     use Queueable;
 
     public $document;
+
     public $sender;
 
     /**
@@ -28,7 +27,6 @@ class PrivateDocumentShared extends Notification
     /**
      * Get the notification's delivery channels.
      *
-     * @param  object  $notifiable
      * @return array<int, string>
      */
     public function via(object $notifiable): array
@@ -40,7 +38,6 @@ class PrivateDocumentShared extends Notification
     /**
      * Get the array representation of the notification.
      *
-     * @param  object  $notifiable
      * @return array<string, mixed>
      */
     public function toArray(object $notifiable): array

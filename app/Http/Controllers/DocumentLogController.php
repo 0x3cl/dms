@@ -2,59 +2,105 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\DocumentAction;
+use App\Enums\FileAbility;
+use App\Models\Document;
 use App\Models\DocumentLog;
+use App\Services\Access\AccessResolver;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Validation\Rule;
+use Inertia\Inertia;
+use Inertia\Response;
 
 class DocumentLogController extends Controller
 {
+    public function __construct(private readonly AccessResolver $access) {}
+
     /**
-     * Store a newly created document log in storage.
+     * Record a hand-off against a document the user can see.
      */
-    public function store(Request $request)
+    public function store(Request $request): RedirectResponse
     {
-        $request->validate([
-            'document_id' => 'required|exists:documents,id',
-            'action' => 'required|string|max:255',
-            'remarks' => 'nullable|string|max:1000', // Validate the new remarks field
+        $validated = $request->validate([
+            'document_id' => ['required', 'exists:documents,id'],
+            // Only the hand-off actions a person performs by hand. This was
+            // `string|max:255`, so a client could post any text it liked —
+            // including a forged "received" entry it had not earned.
+            'action' => ['required', Rule::in(DocumentAction::postableValues())],
+            'remarks' => ['nullable', 'string', 'max:1000'],
         ]);
 
-        $user = Auth::user();
-        $documentId = $request->input('document_id');
-        $action = $request->input('action');
+        $user = $request->user();
+        $document = Document::findOrFail($validated['document_id']);
+        $action = DocumentAction::from($validated['action']);
 
-        // Check for duplicate acknowledgements
-        if ($action === 'Acknowledged / Forwarded') {
-            $lastLog = DocumentLog::where('document_id', $documentId)
-                ->latest('received_at')
-                ->first();
+        // A private document's log is as sensitive as the document, so logging
+        // against one goes through the same visibility rule a read does.
+        if (! $this->canSee($document)) {
+            return back()->with('error', 'You are not authorized to log activity on this document.');
+        }
 
-            if ($lastLog && $lastLog->user_id === $user->id && $lastLog->action === 'Acknowledged / Forwarded') {
-                return redirect()->back()
-                    ->with('error', 'You cannot acknowledge this document twice in a row.');
+        // Two consecutive acknowledgements by the same person say nothing the
+        // first one did not.
+        if ($action === DocumentAction::Acknowledged) {
+            $last = $document->logs()->latest('occurred_at')->first();
+
+            if ($last && $last->actor_id === $user->id && $last->action === DocumentAction::Acknowledged) {
+                return back()->with('error', 'You cannot acknowledge this document twice in a row.');
             }
         }
 
-        // Create the new log entry, now including the remarks
-        DocumentLog::create([
-            'document_id' => $documentId,
-            'user_id'     => $user->id,
-            'division_id' => $user->division_id,
-            'section_id'  => $user->section_id,
-            'action'      => $action,
-            'remarks'     => $request->input('remarks'), // <-- Save the remarks
-            'received_at' => now(),
-        ]);
+        DocumentLog::record($document, $action, $user, $validated['remarks'] ?? null, $request->ip());
 
-        return redirect()->back()->with('success', 'Document activity logged successfully!');
+        return back()->with('success', 'Document activity logged.');
     }
 
     /**
-     * Display a listing of the resource.
+     * A document's full travel history.
+     *
+     * The route previously returned raw JSON, which nothing consumed — the
+     * detail page rendered the same rows itself. It is a real page now.
+     *
+     * No eager loading: every entry carries the actor's name and office as
+     * they were at the time, which is both cheaper and more truthful than
+     * joining whatever those records say today.
      */
-    public function index($document_id)
+    public function index(Request $request, Document $document): Response|RedirectResponse|JsonResponse
     {
-        $logs = DocumentLog::where('document_id', $document_id)->latest()->get();
-        return response()->json($logs);
+        if (! $this->canSee($document)) {
+            return back()->with('error', 'You are not authorized to view this document.');
+        }
+
+        $logs = $document->logs()
+            ->latest('occurred_at')
+            ->paginate(25)
+            ->withQueryString();
+
+        if ($request->wantsJson() && ! $request->header('X-Inertia')) {
+            return response()->json($logs);
+        }
+
+        return Inertia::render('documents/logs', [
+            'document' => $document->only(['id', 'title', 'code', 'type', 'status', 'visibility']),
+            'logs' => $logs,
+        ]);
+    }
+
+    /**
+     * A document's travel history is exactly as sensitive as the document: a
+     * log listing who received a confidential case file is a disclosure of its
+     * own. So this asks the same question reading the document asks.
+     *
+     * It used to be a hand-copied duplicate of
+     * DocumentController::isAuthorized(), each carrying a comment saying the
+     * two had to be changed together. Both call the one resolver now, which is
+     * the only way that stops being something a future change has to remember.
+     */
+    private function canSee(Document $document): bool
+    {
+        return $this->access->allows(Auth::user(), $document, FileAbility::View);
     }
 }
