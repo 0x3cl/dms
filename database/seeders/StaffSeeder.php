@@ -137,12 +137,16 @@ class StaffSeeder extends Seeder
     }
 
     /**
-     * A deliverable-looking address that cannot actually be delivered to.
+     * A predictable address for a seeded test account.
      *
      * `users.email` exists only so the password broker has something to look an
-     * account up by, and these are test accounts — an address that reaches a
-     * real inbox would mean a seeded install could send mail to a stranger.
-     * `.invalid` is reserved by RFC 2606 for exactly this.
+     * account up by; nothing else in the app sends mail, and there is no email
+     * verification. The office asked for `firstname.lastname@test.com` so the
+     * addresses are guessable while demonstrating a reset.
+     *
+     * This is a *seeded test account* convention and nothing else. Real
+     * accounts get their address from the Users module, and `StaffSeeder` must
+     * never be run against a deployment carrying real people.
      *
      * @param  array{first_name: string, last_name: string, employee_id: string}  $person
      */
@@ -150,6 +154,6 @@ class StaffSeeder extends Seeder
     {
         $handle = str($person['first_name'].'.'.$person['last_name'])->lower()->slug('.');
 
-        return "{$handle}@ptri.test.invalid";
+        return "{$handle}@test.com";
     }
 }

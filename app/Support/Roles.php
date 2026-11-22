@@ -58,6 +58,16 @@ class Roles
         'documents.share',
         'documents-all.read',
 
+        /*
+         * Anyone may ask to be let into a document, and see what they have
+         * asked for. There is deliberately no "decide" permission: whether
+         * somebody may answer is a per-record question — the request is
+         * addressed to the document's uploader — so a module checkbox for it
+         * would create requests nobody holding it could answer.
+         */
+        'access-requests.read',
+        'access-requests.create',
+
         // Their own storage — which now includes what has been shared with
         // them, since Shared with Me was folded into My Files. `files.manage`
         // is deliberately absent: it is the reach across everyone else's

@@ -31,7 +31,7 @@ export default defineComponent({
                     <img :src="org.logo" :alt="org.logoAlt" class="h-16 w-16 object-contain" />
                     <p class="text-xs font-semibold uppercase tracking-[0.18em] text-sky-100">{{ org.label }}</p>
                     <h2 class="text-2xl font-bold uppercase tracking-wide sm:text-3xl">{{ org.title }}</h2>
-                    <p class="max-w-md text-sm text-sky-100">Upload a document, get a tracking code and a QR label, and follow every view, download and hand-off from there.</p>
+                    <p class="max-w-md text-sm text-sky-100">Upload a document, get a tracking code and a QR Tracker, and follow every view, download and hand-off from there.</p>
                 </div>
             </aside>
             <div class="flex items-stretch justify-center">

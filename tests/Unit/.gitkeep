@@ -1,0 +1,7 @@
+Keeps tests/Unit present in git.
+
+`phpunit.xml` declares a Unit testsuite over this directory, and PHPUnit exits
+with a configuration error when a declared suite's directory is missing — so
+without this file `php artisan test` (which CI runs) fails before a single test
+runs, on a fresh clone, for the whole repo. There are no unit tests yet; every
+test here is a Feature test against MySQL.

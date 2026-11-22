@@ -2,15 +2,17 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\DocumentVisibility;
 use App\Enums\FileAbility;
 use App\Enums\FileVisibility;
 use App\Enums\GranteeType;
 use App\Enums\ShareAbility;
+use App\Models\DocumentType;
 use App\Models\File;
 use App\Models\Folder;
-use App\Models\UploadSetting;
 use App\Models\User;
 use App\Services\Access\AccessResolver;
+use App\Services\Documents\DocumentRegistrar;
 use App\Services\Files\ArchiveService;
 use App\Services\Files\DeletionConfirmation;
 use App\Services\Files\FileManager;
@@ -44,6 +46,7 @@ class FileActionController extends Controller
         private readonly AccessResolver $access,
         private readonly DeletionConfirmation $confirmation,
         private readonly SharingService $sharing,
+        private readonly DocumentRegistrar $registrar,
     ) {}
 
     /**
@@ -59,8 +62,17 @@ class FileActionController extends Controller
      * Sharing is its own permission, so a tag from somebody who cannot share is
      * refused rather than quietly dropped: a folder that reports itself as
      * shared with four people who cannot open it is worse than an error.
+     *
+     * **Answers JSON when asked**, because the Move and Copy picker creates
+     * folders too — "put it in a new folder" is a thought people have while
+     * choosing a destination, and sending them away to make one first loses
+     * the selection they came with. A redirect would close that dialog, so the
+     * picker asks for JSON and gets the new folder back to navigate into. It
+     * is the same method either way: a second create endpoint would be a
+     * second place the recipient rules and the ability check have to be
+     * remembered.
      */
-    public function storeFolder(Request $request): RedirectResponse
+    public function storeFolder(Request $request): RedirectResponse|JsonResponse
     {
         $validated = $request->validate([
             'parent' => ['required', 'string', 'size:26'],
@@ -80,13 +92,17 @@ class FileActionController extends Controller
             ]);
         }
 
-        DB::transaction(function () use ($request, $validated, $recipients): void {
+        $created = null;
+
+        DB::transaction(function () use ($request, $validated, $recipients, &$created): void {
             $folder = $this->manager->createFolder(
                 $request->user(),
                 $this->folder($validated['parent']),
                 trim($validated['name']),
                 $request,
             );
+
+            $created = $folder;
 
             foreach (User::findMany($recipients) as $recipient) {
                 $this->sharing->share(
@@ -102,33 +118,128 @@ class FileActionController extends Controller
             }
         });
 
-        return back()->with('success', $recipients === []
+        $message = $recipients === []
             ? 'Folder created.'
-            : 'Folder created and shared with '.count($recipients).' '.(count($recipients) === 1 ? 'person' : 'people').'.');
+            : 'Folder created and shared with '.count($recipients).' '.(count($recipients) === 1 ? 'person' : 'people').'.';
+
+        if ($request->wantsJson()) {
+            // The same shape `destinations()` lists, so the picker can drop it
+            // straight into its tree without a second round trip.
+            return response()->json([
+                'folder' => [
+                    'public_id' => $created->public_id,
+                    'name' => $created->name,
+                    'parent_public_id' => $validated['parent'],
+                    'is_mine' => true,
+                    'owner_name' => $request->user()->name,
+                ],
+                'message' => $message,
+            ]);
+        }
+
+        return back()->with('success', $message);
     }
 
+    /**
+     * Upload into a folder, optionally giving the file a tracking jacket.
+     *
+     * **Tracking is opt-in and takes exactly one file.** A tracking code names
+     * one document — `documents.file_id` is singular and the QR Tracker is
+     * named after one code — so three files would mean either three sets of
+     * metadata in a dialog that cannot hold them, or one code over a set the
+     * schema cannot express. A batch that genuinely is one document is a zip,
+     * which `ArchiveService` already handles.
+     *
+     * **The file stays in the folder the person is looking at.** They chose it
+     * by navigating there; filing it somewhere else — as the document register
+     * does, because its form has no folder field — would read as a failed
+     * upload. Nothing downstream depends on the path.
+     *
+     * Two capability checks live here rather than on the route, because the
+     * route gates `files.create` and these are different grants: somebody who
+     * cannot upload a document from the Documents module must not obtain a
+     * tracking code from this one, and naming recipients is sharing.
+     */
     public function upload(Request $request): RedirectResponse
     {
+        $tracking = $request->boolean('track');
+
         $validated = $request->validate([
             'folder' => ['required', 'string', 'size:26'],
             // Count and size come from the administrator's policy, not from a
             // literal written at code time.
-            ...$this->policy->rules(UploadSetting::SCOPE_FILES),
+            ...$this->policy->rules(),
+            ...($tracking ? [
+                // One document, one code.
+                'files' => [...($this->policy->rules()['files'] ?? ['required', 'array']), 'max:1'],
+                'title' => ['required', 'string', 'max:255'],
+                'document_type_id' => [
+                    'required',
+                    /*
+                     * `whereNull('deleted_at')` is not redundant: Rule::exists
+                     * builds its own query straight against the table, so the
+                     * model's soft-delete scope does not apply and a deleted
+                     * type would otherwise still validate.
+                     */
+                    Rule::exists('document_types', 'id')->where('is_active', true)->whereNull('deleted_at'),
+                ],
+                'visibility' => ['required', Rule::enum(DocumentVisibility::class)],
+                // Optional at every level, confidential included: a
+                // document nobody else can open yet is what filing a
+                // confidential document looks like, and requiring a name
+                // here only made people tag whoever came to mind to get past
+                // the form. See DocumentController::store().
+                'recipients' => ['array'],
+                'recipients.*' => ['distinct', 'exists:users,id'],
+            ] : []),
         ]);
 
+        $user = $request->user();
         $folder = $this->folder($validated['folder']);
-        $count = 0;
+
+        $visibility = $tracking ? DocumentVisibility::from($validated['visibility']) : null;
+
+        if ($tracking) {
+            if (! $user->can('documents.create')) {
+                throw ValidationException::withMessages([
+                    'track' => 'Your role cannot create tracked documents.',
+                ]);
+            }
+
+            if ($visibility->taggable() && ! $user->can('documents.share')) {
+                throw ValidationException::withMessages([
+                    'recipients' => 'Your role cannot share a document with named recipients.',
+                ]);
+            }
+        }
 
         foreach ($request->file('files') as $upload) {
             // Extension and sniffed MIME type, against the current policy row.
             // Checked before the first byte is stored, so a rejected batch
             // stores nothing.
-            $this->policy->assertPermitted($upload, UploadSetting::SCOPE_FILES);
+            $this->policy->assertPermitted($upload);
         }
 
+        $count = 0;
+        $stored = null;
+
         foreach ($request->file('files') as $upload) {
-            $this->manager->upload($request->user(), $folder, $upload, $request);
+            $stored = $this->manager->upload($user, $folder, $upload, $request);
             $count++;
+        }
+
+        if ($tracking && $stored !== null) {
+            $document = $this->registrar->register(
+                $stored,
+                DocumentType::query()->findOrFail($validated['document_type_id']),
+                $validated['title'],
+                $visibility,
+                $validated['recipients'] ?? [],
+                $user,
+                $request,
+            );
+
+            return back()->with('success', "Uploaded and tracked as {$document->code}.");
         }
 
         return back()->with('success', $count === 1 ? 'File uploaded.' : "{$count} files uploaded.");
@@ -150,6 +261,77 @@ class FileActionController extends Controller
         );
 
         return back()->with('success', 'Renamed.');
+    }
+
+    /**
+     * Put new bytes behind an existing file: version N becomes N+1.
+     *
+     * The upload policy is applied here, before the manager opens its
+     * transaction, because that is how every other upload path does it — a
+     * refused file must store nothing rather than be rolled back after its
+     * bytes are on the disk.
+     *
+     * No authorization in this controller. `FileManager::replace()` resolves
+     * the ability on the file *and* refuses a tracked document to anyone but
+     * its uploader, which is the one rule a second door into personal storage
+     * must not widen: the bytes a printed tracking code names are the
+     * uploader's to change.
+     */
+    public function replace(Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            'public_id' => ['required', 'string', 'size:26'],
+            'note' => ['nullable', 'string', 'max:255'],
+            'file' => $this->policy->singleRules(),
+        ]);
+
+        $upload = $request->file('file');
+
+        $this->policy->assertPermitted($upload, 'file');
+
+        $file = File::query()->where('public_id', $validated['public_id'])->firstOrFail();
+
+        $updated = $this->manager->replace(
+            $request->user(),
+            $file,
+            $upload,
+            $validated['note'] ?? null,
+            $request,
+        );
+
+        return back()->with('success', "Saved as version {$updated->versionNumber()}.");
+    }
+
+    /**
+     * Bring an earlier version back, as a new version.
+     *
+     * Forward rather than backward, so the history stays append-only — see
+     * FileVersionService. No upload-policy check: these bytes already
+     * satisfied it once, and re-checking would let a policy tightened since
+     * make a file's own history unrevertable.
+     */
+    public function revert(Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            'public_id' => ['required', 'string', 'size:26'],
+            'version' => ['required', 'integer', 'min:1'],
+            'note' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $file = File::query()->where('public_id', $validated['public_id'])->firstOrFail();
+
+        $updated = $this->manager->revertTo(
+            $request->user(),
+            $file,
+            $validated['version'],
+            $validated['note'] ?? null,
+            $request,
+        );
+
+        return back()->with(
+            'success',
+            "Version {$validated['version']} is current again, as version {$updated->versionNumber()}.",
+        );
     }
 
     public function move(Request $request): RedirectResponse
@@ -223,12 +405,17 @@ class FileActionController extends Controller
     }
 
     /**
-     * Move a selection to the trash, behind a typed confirmation code.
+     * Move a selection to the trash.
      *
-     * The code is checked here, on the server, before anything is resolved —
-     * see App\Services\Files\DeletionConfirmation for why it is not a browser
-     * -side check. Verified first so a wrong code costs nothing and reveals
-     * nothing about what the ids point at.
+     * **No confirmation code.** This used to demand the same typed four digits
+     * `purge()` does, which made the reversible act as heavy on screen as the
+     * irreversible one and taught people to type a code without reading the
+     * dialog it was guarding — the exact habit the code exists to interrupt.
+     * Friction spent on something Trash can undo is friction unavailable for
+     * the thing it cannot, so it is spent only there now.
+     *
+     * Nothing else is relaxed: the ability is still resolved on every subject
+     * by AccessResolver inside FileManager, in the transaction that writes.
      */
     public function destroy(Request $request): RedirectResponse
     {
@@ -236,10 +423,7 @@ class FileActionController extends Controller
             'items' => ['required', 'array', 'max:100'],
             'items.*.kind' => ['required', Rule::in(['file', 'folder'])],
             'items.*.public_id' => ['required', 'string', 'size:26'],
-            'confirmation' => ['required', 'string', 'size:4'],
         ]);
-
-        $this->confirmation->assert($request, DeletionConfirmation::PURPOSE_DELETE, $validated['confirmation']);
 
         DB::transaction(function () use ($request, $validated): void {
             foreach ($validated['items'] as $item) {
@@ -257,8 +441,16 @@ class FileActionController extends Controller
     /**
      * Permanently delete a selection out of the trash.
      *
-     * Its own purpose for the confirmation code, so a code issued for "move to
-     * trash" cannot satisfy this: one is reversible and the other is not.
+     * **The one operation behind a typed confirmation code**, issued by the
+     * server, held in the session and spent on use — see
+     * App\Services\Files\DeletionConfirmation for why it is not a browser-side
+     * check. Verified before anything is resolved, so a wrong code costs
+     * nothing and reveals nothing about what the ids point at.
+     *
+     * `PURPOSE_PURGE` survives as a distinct purpose even though it is now the
+     * only one minted, because the purpose is what binds a code to the act it
+     * was issued for. Dropping it would let any code satisfy any future
+     * confirmation.
      */
     public function purge(Request $request): RedirectResponse
     {
@@ -294,7 +486,10 @@ class FileActionController extends Controller
     public function confirmCode(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'purpose' => ['required', Rule::in([DeletionConfirmation::PURPOSE_DELETE, DeletionConfirmation::PURPOSE_PURGE])],
+            // Only the irreversible act is confirmed by code, so this is the
+            // only purpose there is. Kept as a validated parameter rather than
+            // assumed, because the purpose is what binds a code to its act.
+            'purpose' => ['required', Rule::in([DeletionConfirmation::PURPOSE_PURGE])],
         ]);
 
         return response()->json([

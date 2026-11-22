@@ -42,9 +42,9 @@ enum FileVisibility: string
     public function tone(): string
     {
         return match ($this) {
-            self::Private => 'amber',
-            self::PublicItem => 'emerald',
-            self::Confidential => 'rose',
+            self::Private => 'orange',
+            self::PublicItem => 'green',
+            self::Confidential => 'red',
         };
     }
 

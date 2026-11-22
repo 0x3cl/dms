@@ -14,6 +14,7 @@ use App\Services\Files\FilePreview;
 use App\Services\Files\FileStorage;
 use App\Services\Files\FolderService;
 use App\Services\Files\SharingService;
+use App\Support\FileTypes;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
@@ -101,27 +102,58 @@ class FilePreviewTest extends TestCase
     }
 
     /**
-     * An Office document hands a third party a signed URL, never the bytes.
+     * Word and Excel are drawn **in the browser**, from our own stream.
+     *
+     * They used to go to Microsoft's viewer, which fetches the file from our
+     * server — the one relaxation of the private disk anywhere in this system,
+     * and the reason these previews rendered nothing at all on localhost or an
+     * office LAN. No viewer URL is minted for them now: doing so would hand a
+     * third party a credential for bytes that are never going to be sent.
      */
-    public function test_an_office_document_is_described_with_a_signed_viewer_url(): void
+    public function test_word_and_excel_are_rendered_in_the_browser(): void
     {
         $user = User::factory()->create();
-        $file = $this->fileIn(
-            $this->root($user),
-            $user,
-            'minutes.docx',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        );
 
-        $descriptor = $this->describe($user, $file);
+        $expected = [
+            'minutes.docx' => 'docx',
+            'budget.xlsx' => 'xlsx',
+            'list.csv' => 'xlsx',
+        ];
 
-        $this->assertStringStartsWith(FilePreview::VIEWER.'?src=', $descriptor['viewer_url']);
+        foreach ($expected as $name => $renderer) {
+            $file = $this->fileIn($this->root($user), $user, $name, 'application/zip');
+            $descriptor = $this->describe($user, $file);
 
-        // The wrapped URL is ours, points at this one file, and is signed.
-        $wrapped = urldecode(substr($descriptor['viewer_url'], strlen(FilePreview::VIEWER.'?src=')));
-        $this->assertStringContainsString("/files/viewer/{$user->public_id}/{$file->public_id}", $wrapped);
-        $this->assertStringContainsString('signature=', $wrapped);
-        $this->assertStringContainsString('expires=', $wrapped);
+            $this->assertSame('document', $descriptor['mode'], $name);
+            $this->assertSame($renderer, $descriptor['client_renderer'], $name);
+            $this->assertNull($descriptor['viewer_url'], "{$name} must not be handed to an outside viewer.");
+            $this->assertFalse($descriptor['viewer_unreachable'], $name);
+        }
+    }
+
+    /**
+     * What no browser library renders still goes to the Office viewer.
+     *
+     * PowerPoint, and the legacy OLE2 formats `.doc`/`.xls`, which are not
+     * OOXML at all. The door narrows; it does not close.
+     */
+    public function test_powerpoint_and_legacy_office_still_use_the_viewer(): void
+    {
+        $user = User::factory()->create();
+
+        foreach (['deck.pptx', 'old.doc', 'old.xls'] as $name) {
+            $file = $this->fileIn($this->root($user), $user, $name, 'application/octet-stream');
+            $descriptor = $this->describe($user, $file);
+
+            $this->assertNull($descriptor['client_renderer'], "{$name} has no in-browser renderer.");
+            $this->assertStringStartsWith(FilePreview::VIEWER.'?src=', (string) $descriptor['viewer_url'], $name);
+
+            // The wrapped URL is ours, points at this one file, and is signed.
+            $wrapped = urldecode(substr((string) $descriptor['viewer_url'], strlen(FilePreview::VIEWER.'?src=')));
+            $this->assertStringContainsString("/files/viewer/{$user->public_id}/{$file->public_id}", $wrapped);
+            $this->assertStringContainsString('signature=', $wrapped);
+            $this->assertStringContainsString('expires=', $wrapped);
+        }
     }
 
     public function test_the_signed_viewer_url_serves_the_file_without_a_session(): void
@@ -141,6 +173,112 @@ class FilePreviewTest extends TestCase
 
         // Microsoft's servers have no cookie of ours, which is the whole point.
         $this->get($signed)->assertOk();
+    }
+
+    /**
+     * The inline list is derived from the catalogue, not hand-written.
+     *
+     * It used to be a literal array naming `audio/wav`, and the type
+     * `finfo` actually produces for a WAV is `audio/x-wav` — so every WAV
+     * preview fell through to the download branch and the `<audio>` element
+     * was handed an attachment, which plays nothing. The same failure the
+     * upload policy had when it kept extensions and MIME types in two
+     * lists: a format admitted in one vocabulary and refused in another.
+     *
+     * Asserted as a property of the catalogue rather than as a list, so it
+     * cannot rot: every alias of a permitted image, audio or video type is
+     * inline, and SVG never is.
+     */
+    public function test_every_media_alias_in_the_catalogue_is_served_inline(): void
+    {
+        $inline = FileStorage::inlineTypes();
+
+        foreach (FileTypes::extensions() as $extension) {
+            $group = FileTypes::group($extension);
+
+            if (! in_array($group, [FileTypes::GROUP_IMAGES, FileTypes::GROUP_AUDIO, FileTypes::GROUP_VIDEO], true)) {
+                continue;
+            }
+
+            foreach (FileTypes::mimeTypes($extension) as $type) {
+                if ($extension === 'svg') {
+                    $this->assertNotContains($type, $inline, 'An SVG is a document that can carry script.');
+
+                    continue;
+                }
+
+                $this->assertContains($type, $inline, "A .{$extension} preview needs {$type} served inline.");
+            }
+        }
+
+        $this->assertContains('application/pdf', $inline);
+        $this->assertNotContains('text/html', $inline);
+        $this->assertNotContains('application/zip', $inline);
+    }
+
+    /**
+     * What the viewer actually receives, and why it is not `inline()`.
+     *
+     * An Office file is deliberately not an inline type — this application must
+     * never render one in place — so the viewer route used to fall through to
+     * `download()`: a streamed attachment, with the type sniffed at upload and
+     * no length. Microsoft fetches this URL from their own servers, and a
+     * fetcher with no `Content-Length` cannot start rendering until it has read
+     * the whole body, cannot resume, and may not recognise the format at all.
+     */
+    public function test_the_viewer_response_is_a_ranged_inline_body_of_the_right_type(): void
+    {
+        $user = User::factory()->create();
+        $file = $this->fileIn(
+            $this->root($user),
+            $user,
+            'budget.xlsx',
+            // Sniffed as its zip container at upload, as a real one often is.
+            'application/zip',
+        );
+
+        $signed = URL::temporarySignedRoute('files.viewer', now()->addMinutes(5), [
+            'owner' => $user->public_id,
+            'file' => $file->public_id,
+        ]);
+
+        $response = $this->get($signed)->assertOk();
+
+        // The format's canonical type, from the catalogue — not the container
+        // the upload happened to sniff as.
+        $this->assertSame(
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            $response->headers->get('Content-Type'),
+        );
+        $this->assertStringStartsWith('inline', (string) $response->headers->get('Content-Disposition'));
+        $this->assertNotNull($response->headers->get('Content-Length'));
+        $this->assertSame('bytes', $response->headers->get('Accept-Ranges'));
+    }
+
+    /**
+     * A preview is re-requested on every resize, re-mount and reload, so the
+     * second look has to be free — but only for the person who already passed
+     * the gate. `private` is what keeps a proxy from holding a confidential
+     * document and handing it to whoever asks for the URL next.
+     */
+    public function test_a_preview_response_is_cacheable_privately_and_carries_a_validator(): void
+    {
+        $user = User::factory()->create();
+        $file = $this->fileIn($this->root($user), $user, 'report.pdf', 'application/pdf');
+
+        $response = $this->actingAs($user)
+            ->get("/files/{$user->public_id}/{$file->public_id}?disposition=inline")
+            ->assertOk();
+
+        $cacheControl = (string) $response->headers->get('Cache-Control');
+
+        $this->assertStringContainsString('private', $cacheControl);
+        $this->assertStringContainsString('max-age=600', $cacheControl);
+        $this->assertStringNotContainsString('public', $cacheControl);
+
+        // The validator is the content hash, so it changes if and only if the
+        // bytes do.
+        $this->assertSame('"'.$file->checksum.'"', $response->headers->get('ETag'));
     }
 
     public function test_an_unsigned_or_expired_viewer_url_is_refused(): void
@@ -194,8 +332,34 @@ class FilePreviewTest extends TestCase
         // It stops working at that moment, not when somebody remembers.
         $this->get($signed)->assertNotFound();
 
-        // And no new one is offered.
-        $this->assertSame('none', $this->describe($user, $file)['mode']);
+        /*
+         * And no new one is offered — but the document *is* previewable now,
+         * which is the point of rendering it here instead.
+         *
+         * Before, a confidential Word file had no preview at all: the only
+         * renderer was one that needed a URL reaching outside, and that URL
+         * had to be refused. A renderer running in the browser of somebody the
+         * resolver has already granted `view` to adds no reach, so the preview
+         * costs nothing that was being protected.
+         */
+        $descriptor = $this->describe($user, $file);
+        $this->assertNull($descriptor['viewer_url'], 'A confidential item never gets an outside viewer URL.');
+        $this->assertSame('docx', $descriptor['client_renderer']);
+        $this->assertSame('document', $descriptor['mode']);
+    }
+
+    /** What has no in-browser renderer still has no preview when confidential. */
+    public function test_a_confidential_deck_still_has_no_preview(): void
+    {
+        $user = User::factory()->create();
+        $file = $this->fileIn($this->root($user), $user, 'deck.pptx', 'application/octet-stream');
+        $file->update(['visibility' => FileVisibility::Confidential->value]);
+
+        $descriptor = $this->describe($user, $file);
+
+        $this->assertNull($descriptor['viewer_url']);
+        $this->assertNull($descriptor['client_renderer']);
+        $this->assertSame('none', $descriptor['mode']);
     }
 
     /**
@@ -247,20 +411,26 @@ class FilePreviewTest extends TestCase
         config(['app.url' => 'http://localhost:8000']);
 
         $user = User::factory()->create();
-        $word = $this->fileIn(
-            $this->root($user),
-            $user,
-            'minutes.docx',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        );
+        $deck = $this->fileIn($this->root($user), $user, 'deck.pptx', 'application/octet-stream');
+        $word = $this->fileIn($this->root($user), $user, 'minutes.docx', 'application/zip');
         $pdf = $this->fileIn($this->root($user), $user, 'report.pdf', 'application/pdf');
 
-        $wordDescriptor = $this->describe($user, $word);
-        $this->assertNull($wordDescriptor['viewer_url']);
-        $this->assertTrue($wordDescriptor['viewer_unreachable']);
-        $this->assertFalse($wordDescriptor['renders_locally']);
+        // A deck has no in-browser renderer, so the network really is why it
+        // cannot be shown, and the empty state should say so.
+        $deckDescriptor = $this->describe($user, $deck);
+        $this->assertNull($deckDescriptor['viewer_url']);
+        $this->assertTrue($deckDescriptor['viewer_unreachable']);
 
-        // A PDF is unaffected: it never needed the viewer.
+        /*
+         * Word is unaffected, which is the practical payoff of the change: it
+         * renders on a developer machine and on an office LAN, where it
+         * previously showed nothing at all.
+         */
+        $wordDescriptor = $this->describe($user, $word);
+        $this->assertSame('docx', $wordDescriptor['client_renderer']);
+        $this->assertFalse($wordDescriptor['viewer_unreachable']);
+
+        // A PDF is unaffected too: it never needed the viewer.
         $pdfDescriptor = $this->describe($user, $pdf);
         $this->assertSame('document', $pdfDescriptor['mode']);
         $this->assertNull($pdfDescriptor['viewer_url']);
@@ -329,12 +499,23 @@ class FilePreviewTest extends TestCase
      * exactly who a public document is for, and gating this on a session would
      * mean the preview worked for everyone except them.
      */
-    public function test_a_public_documents_preview_is_described_for_a_signed_out_reader(): void
+    /**
+     * The preview endpoint answers a signed-in reader and nobody else.
+     *
+     * It used to be open, matching the tracking page it serves. Both now
+     * require an account: a tracking code is printed on the folder and is not
+     * a credential, so somebody outside the office is given a share link
+     * instead — which carries its own preview, through this same descriptor.
+     */
+    public function test_a_public_documents_preview_needs_an_account(): void
     {
         $uploader = User::factory()->create();
         $document = $this->document($uploader, 'public');
 
-        $descriptor = $this->getJson("/documents/{$document->id}/preview")
+        $this->getJson("/documents/{$document->id}/preview")->assertUnauthorized();
+
+        $descriptor = $this->actingAs(User::factory()->create())
+            ->getJson("/documents/{$document->id}/preview")
             ->assertOk()
             ->json();
 
@@ -392,7 +573,8 @@ class FilePreviewTest extends TestCase
 
         $document->update(['file_id' => null, 'file_path' => null]);
 
-        $descriptor = $this->getJson("/documents/{$document->id}/preview")->assertOk()->json();
+        $descriptor = $this->actingAs($uploader)
+            ->getJson("/documents/{$document->id}/preview")->assertOk()->json();
 
         $this->assertSame('none', $descriptor['mode']);
         $this->assertFalse($descriptor['can_download']);

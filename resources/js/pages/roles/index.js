@@ -5,10 +5,11 @@ import Card from '../../components/Card';
 import ConfirmActionModal from '../../components/ConfirmActionModal';
 import IndexControls from '../../components/IndexControls';
 import Pagination from '../../components/Pagination';
+import RowActions from '../../components/RowActions';
 
 export default defineComponent({
     name: 'RolesIndex',
-    components: { AdminShell, Card, ConfirmActionModal, Head, IndexControls, Link, Pagination },
+    components: { AdminShell, Card, ConfirmActionModal, Head, IndexControls, Link, Pagination, RowActions },
     props: {
         roles: { type: Object, required: true },
         filters: { type: Object, required: true },
@@ -87,9 +88,15 @@ export default defineComponent({
                             <td class="px-4 py-4 text-slate-600">{{ role.permissions_count }}</td>
                             <td class="px-4 py-4 text-slate-600">{{ role.users_count }}</td>
                             <td class="whitespace-nowrap px-4 py-4 text-right">
-                                <Link v-if="!isProtected(role)" :href="'/roles/' + role.id + '/edit'" class="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-bold text-[#07559e] hover:bg-sky-100"><i class="fa-solid fa-pen" aria-hidden="true"></i>Edit</Link>
-                                <button v-if="!isProtected(role)" type="button" class="ml-2 inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-bold text-rose-600 hover:bg-rose-50" @click="deleting = role"><i class="fa-solid fa-trash" aria-hidden="true"></i>Delete</button>
-                                <span v-if="isProtected(role)" class="text-sm text-slate-400">Not editable</span>
+                                <RowActions
+                                    v-if="!isProtected(role)"
+                                    :label="'Actions for ' + role.name"
+                                    :actions="[
+                                        { key: 'edit', label: 'Edit', icon: 'fa-solid fa-pen', tone: 'primary', href: '/roles/' + role.id + '/edit' },
+                                        { key: 'delete', label: 'Delete', icon: 'fa-solid fa-trash', tone: 'danger' },
+                                    ]"
+                                    @select="deleting = role" />
+                                <span v-else class="text-sm text-slate-400">Not editable</span>
                             </td>
                         </tr>
                         <tr v-if="roles.data.length === 0">

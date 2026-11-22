@@ -1,17 +1,21 @@
 <?php
 
+use App\Http\Controllers\AccessRequestController;
 use App\Http\Controllers\ActivityTrailController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DivisionController;
+use App\Http\Controllers\DocumentCommentController;
 use App\Http\Controllers\DocumentController;
 use App\Http\Controllers\DocumentLogController;
 use App\Http\Controllers\DocumentTypeController;
+use App\Http\Controllers\DocumentTypeGroupController;
 use App\Http\Controllers\FileActionController;
 use App\Http\Controllers\FileManagerController;
 use App\Http\Controllers\FileStreamController;
 use App\Http\Controllers\LandingController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\PublicTrackingController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\SectionController;
 use App\Http\Controllers\ShareController;
@@ -30,26 +34,96 @@ use Illuminate\Support\Facades\Route;
 // Public
 Route::get('/', [LandingController::class, 'index'])->name('home');
 
-// A QR label resolves here. Public by design: the gate is the document's own
-// visibility (DocumentController::isAuthorized()), not the route.
-Route::get('/documents/success/{code}/{file_name}', [DocumentController::class, 'success'])->name('documents.success');
-Route::get('/documents/qr/download/{file_name}', [DocumentController::class, 'downloadQr'])->name('documents.qrcode.download');
-Route::get('/scan', [DocumentController::class, 'scan'])->name('scan.qr');
+/*
+ * The tracking surface — scan a label, type a code, open the document, preview
+ * its file — now requires an account.
+ *
+ * It used to be open, on the reasoning that a QR label must resolve for
+ * whoever is holding the folder. The office's answer to that is narrower and
+ * better: a **tracking code is printed on the folder**, so treating it as a
+ * credential means anyone who photographs a desk can read every public
+ * document in the institute, and a code is short, sequential and guessable
+ * besides. Somebody outside the office is given a **share link** instead —
+ * one URL, with an ability, an expiry and a view cap, that can be revoked and
+ * whose every redemption is recorded against it.
+ *
+ * So the two audiences are separated by the door they come through rather
+ * than by what the document is classified as: staff sign in, everybody else
+ * holds a link. `DocumentController::isAuthorized()` is unchanged and still
+ * decides *which* documents a signed-in reader may open.
+ */
+Route::middleware('auth')->group(function () {
+    Route::get('/documents/success/{code}/{file_name}', [DocumentController::class, 'success'])->name('documents.success');
+    Route::get('/documents/qr/download/{file_name}', [DocumentController::class, 'downloadQr'])->name('documents.qrcode.download');
+
+    /*
+     * How a document's file should be previewed, for the in-page viewer on
+     * documents/show. The literal `preview` segment keeps it clear of
+     * `documents/view/{code}` further down.
+     */
+    Route::get('/documents/{document}/preview', [DocumentController::class, 'preview'])->name('documents.preview');
+
+    /*
+     * The QR label for one document, for the register's row action. Behind
+     * the document's own read rule in the controller rather than a
+     * `permission:` gate, and what it encodes depends on whether the asker
+     * is the uploader — a reader gets a symbol for the tracking URL, never
+     * for the share link.
+     */
+    Route::get('/documents/{document}/qr-label', [DocumentController::class, 'qrLabel'])->name('documents.qr-label');
+
+    /*
+     * The file's version history. Behind the document's own read rule inside
+     * the controller, not a `permission:` gate — "revised four times, by whom,
+     * and why" is a disclosure about the document, so it answers to the same
+     * question the page does.
+     */
+    Route::get('/documents/{document}/versions', [DocumentController::class, 'versions'])
+        ->name('documents.versions');
+
+    /*
+     * Comments, behind the document's own read rule inside the controller
+     * rather than a `permission:` gate — for the same reason the trail and
+     * the version history are: who may discuss a document is who may open
+     * it, and `AccessResolver` already answers that. A module permission
+     * would be a second statement of one rule, and one that could grant
+     * somebody commenting on documents they cannot read.
+     */
+    Route::post('/documents/{document}/comments', [DocumentCommentController::class, 'store'])
+        ->name('documents.comments.store');
+    Route::delete('/documents/{document}/comments/{comment}', [DocumentCommentController::class, 'destroy'])
+        ->name('documents.comments.destroy');
+
+    // Track-by-code. `/track` used to render a view that did not exist; it is
+    // now an alias of the real lookup rather than a guaranteed 500.
+    Route::get('/documents/track', [DocumentController::class, 'viewByCode'])->name('documents.viewByCode');
+});
 
 /*
- * How a document's file should be previewed, for the in-page viewer on
- * documents/show. Public for the same reason the page and the byte route are:
- * the gate is the document's own visibility, applied inside the controller, and
- * a signed-out reader holding a printed label must get the same preview as
- * anyone else. The literal `preview` segment keeps it clear of
- * `documents/view/{code}` below.
+ * The public tracking surface.
+ *
+ * A label scanned, or a code typed, by somebody with no account. It is a
+ * *narrowing* of the authenticated surface below and not a reopening of the
+ * one that preceded it: a public document is readable without an account —
+ * which is what `AccessResolver::forDocument()` has always said about it —
+ * while a private or confidential one answers with its classification and
+ * nothing else. See PublicTrackingController for the whole argument.
+ *
+ * Throttled, because a tracking code is a short per-type daily series and
+ * this route answers whether one is live. Rate limiting does not make the
+ * series unguessable; it makes walking it slow enough to be worth noticing.
  */
-Route::get('/documents/{document}/preview', [DocumentController::class, 'preview'])->name('documents.preview');
+Route::get('/track', [PublicTrackingController::class, 'show'])
+    ->middleware('throttle:30,1')
+    ->name('tracking.public');
 
-// Track-by-code. `/track` used to render a view that did not exist; it is now
-// an alias of the real lookup rather than a guaranteed 500.
-Route::get('/documents/track', [DocumentController::class, 'viewByCode'])->name('documents.viewByCode');
-Route::get('/track', fn () => redirect()->route('documents.viewByCode'));
+/*
+ * Scanning is public too, and the page behind it is not. A guest is handed
+ * the public lookup — which reads a label with the same camera — rather than
+ * a sign-in form, because a sign-in form is no answer at all to somebody
+ * holding the folder.
+ */
+Route::get('/scan', [DocumentController::class, 'scan'])->name('scan.qr');
 
 // Sections of a division, as JSON, for narrowing a section picker.
 Route::get('/sections/by-division/{division}', [SectionController::class, 'byDivision'])->name('sections.byDivision');
@@ -183,11 +257,91 @@ Route::middleware(['auth'])->group(function () {
      * `documents.download` does not make anyone a recipient.
      */
     Route::middleware('permission:documents.download')->group(function () {
+        /*
+         * There is no `receive` route any more. "Receive & download" fused two
+         * different facts into one request — the server observing that a copy
+         * left, and the person asserting the document reached them. Taking
+         * delivery is now a `received` entry on the Log action form, and
+         * downloading is this route, which already records the download in
+         * both `document_logs` and `document_downloads`.
+         */
         Route::get('documents/{document}/file/{action}', [DocumentController::class, 'accessFile'])
             ->where('action', 'view|download')
             ->name('documents.accessFile');
-        Route::post('documents/{document}/receive', [DocumentController::class, 'receiveFile'])->name('documents.receiveFile');
     });
+
+    /*
+     * A document's own share links.
+     *
+     * Separate from the file manager's `files.links.*` because the subject is
+     * the document: that is what carries the classification a link has to obey,
+     * and a link minted against the document's `File` row would answer to the
+     * file's visibility instead — the looser second door AccessResolver exists
+     * to close.
+     *
+     * `documents.share` is the module gate; the uploader check and the
+     * confidential refusal are both in the controller, because "may this person
+     * share" and "may this document be linked" are different questions and a
+     * route can only ask the first.
+     */
+    Route::middleware('permission:documents.share')->group(function () {
+        Route::post('documents/{document}/share-links', [DocumentController::class, 'storeLink'])
+            ->name('documents.links.store');
+        // An item has one live link, so its terms are edited rather than
+        // superseded — the URL somebody was already sent keeps working.
+        Route::match(['put', 'patch'], 'documents/{document}/share-links/{link}', [DocumentController::class, 'updateLink'])
+            ->name('documents.links.update');
+        /*
+         * A new address for the one link, keeping its terms.
+         *
+         * Not an edit, so not the PATCH above: the terms are untouched and the
+         * credential is what changes, which cuts off every copy of the old URL.
+         */
+        Route::post('documents/{document}/share-links/{link}/regenerate', [DocumentController::class, 'regenerateLink'])
+            ->name('documents.links.regenerate');
+        Route::delete('documents/{document}/share-links/{link}', [DocumentController::class, 'destroyLink'])
+            ->name('documents.links.destroy');
+        /*
+         * Taking a named viewer off a restricted document.
+         *
+         * Under `documents.share`, because deciding who a document is for is
+         * one grant whichever direction it moves in — a role that may tag
+         * somebody is the role that may untag them, and a separate permission
+         * for the second half is how an office ends up able to grant access it
+         * cannot withdraw. Per-document ownership is still checked in the
+         * controller, as it is for every other write here.
+         */
+        Route::delete('documents/{document}/recipients/{user}', [DocumentController::class, 'destroyRecipient'])
+            ->name('documents.recipients.destroy');
+    });
+
+    /*
+     * Asking to be let into a document, and answering.
+     *
+     * Granting is a `document_recipients` row — the same list the resolver
+     * already reads — so this adds no new way into a document.
+     *
+     * The decision route carries **no** `permission:` middleware, deliberately:
+     * whether somebody may answer is a per-record question (it is addressed to
+     * the document's uploader), and a module permission for it would create
+     * requests nobody holding the checkbox could answer. The controller is the
+     * only thing that can know who the uploader is.
+     */
+    Route::middleware('permission:access-requests.read')
+        ->get('/access-requests', [AccessRequestController::class, 'index'])->name('access-requests.index');
+    Route::middleware('permission:access-requests.create')
+        ->post('/access-requests', [AccessRequestController::class, 'store'])->name('access-requests.store');
+    Route::patch('/access-requests/{accessRequest}', [AccessRequestController::class, 'update'])
+        ->name('access-requests.update');
+    /*
+     * Clearing one's own request. No `permission:` middleware, for the same
+     * reason the decision route has none: whether somebody may clear a row is
+     * a per-record question — is it theirs — and the controller is the only
+     * thing that can answer it. A module checkbox would be a permission that
+     * grants nothing it could not already do.
+     */
+    Route::delete('/access-requests/{accessRequest}', [AccessRequestController::class, 'destroy'])
+        ->name('access-requests.destroy');
 
     /*
      * The download register carries the IP address every copy went to, which is
@@ -239,6 +393,16 @@ Route::middleware(['auth'])->group(function () {
     });
     Route::middleware('permission:files.edit')->group(function () {
         Route::post('/files/rename', [FileActionController::class, 'rename'])->name('files.rename');
+        /*
+         * `files.edit`, not `files.create`, and the distinction is the subject
+         * rather than the bytes: what is gated here is altering an item that
+         * already exists. Somebody holding `files.create` without this can
+         * still upload the thing as a new file, which is the honest fallback.
+         * The per-item rule — and the refusal to let anyone but a tracked
+         * document's uploader swap its bytes — lives in FileManager::replace().
+         */
+        Route::post('/files/replace', [FileActionController::class, 'replace'])->name('files.replace');
+        Route::post('/files/revert', [FileActionController::class, 'revert'])->name('files.revert');
         Route::post('/files/move', [FileActionController::class, 'move'])->name('files.move');
         Route::post('/files/restore', [FileActionController::class, 'restore'])->name('files.restore');
     });
@@ -274,6 +438,9 @@ Route::middleware(['auth'])->group(function () {
     Route::middleware('permission:files.read')->group(function () {
         Route::get('/files/destinations', [FileActionController::class, 'destinations'])->name('files.destinations');
         Route::get('/files/preview', [FileStreamController::class, 'previewDescriptor'])->name('files.preview');
+        // Fetched like the descriptor, and for the same reason: every entry
+        // carries URLs that open bytes.
+        Route::get('/files/versions', [FileStreamController::class, 'versions'])->name('files.versions');
     });
 
     /*
@@ -300,6 +467,7 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/files/share-state', [ShareController::class, 'show'])->name('files.shares.show');
         Route::delete('/files/shares/{share}', [ShareController::class, 'destroy'])->name('files.shares.destroy');
         Route::post('/files/share-links', [ShareController::class, 'storeLink'])->name('files.links.store');
+        Route::match(['put', 'patch'], '/files/share-links/{link}', [ShareController::class, 'updateLink'])->name('files.links.update');
         Route::delete('/files/share-links/{link}', [ShareController::class, 'destroyLink'])->name('files.links.destroy');
     });
 
@@ -311,8 +479,22 @@ Route::middleware(['auth'])->group(function () {
      * `restore` and `destroy` bind `withTrashed()`, because a soft-deleted type
      * would not resolve otherwise and restoring one is the whole point.
      */
-    Route::middleware('permission:document-types.read')
-        ->get('document-types', [DocumentTypeController::class, 'index'])->name('document-types.index');
+    /*
+     * The module opens on the **groups**, and a group is opened to see the
+     * types inside it. A flat table of every type answered the wrong
+     * question first — an office wants to know what kinds of thing it files
+     * before which exact type.
+     *
+     * The literal `group` segment is declared before `document-types/{documentType}`
+     * for the rule this file keeps everywhere: a literal that comes after a
+     * wildcard is captured by it.
+     */
+    Route::middleware('permission:document-types.read')->group(function () {
+        Route::get('document-types', [DocumentTypeController::class, 'index'])->name('document-types.index');
+        // `{group}` is a group id, `other` for the ungrouped, or `all`.
+        Route::get('document-types/group/{group}', [DocumentTypeController::class, 'group'])
+            ->name('document-types.group');
+    });
     Route::middleware('permission:document-types.write')->group(function () {
         Route::get('document-types/create', [DocumentTypeController::class, 'create'])->name('document-types.create');
         Route::post('document-types', [DocumentTypeController::class, 'store'])->name('document-types.store');
@@ -320,16 +502,39 @@ Route::middleware(['auth'])->group(function () {
         Route::match(['put', 'patch'], 'document-types/{documentType}', [DocumentTypeController::class, 'update'])->name('document-types.update');
         Route::post('document-types/{documentType}/restore', [DocumentTypeController::class, 'restore'])
             ->withTrashed()->name('document-types.restore');
+
+        /*
+         * The headings types are arranged under — a parent of a type, managed
+         * on the same screen and behind the same grant. A group and a type
+         * are one piece of office vocabulary, and two sets of permission
+         * names is how a role ends up holding half of one.
+         *
+         * Declared before `document-types/{documentType}` would matter if the
+         * paths collided; they do not, but the literal-before-wildcard rule
+         * in this file is worth keeping visible.
+         */
+        Route::get('document-type-groups/create', [DocumentTypeGroupController::class, 'create'])
+            ->name('document-type-groups.create');
+        Route::post('document-type-groups', [DocumentTypeGroupController::class, 'store'])
+            ->name('document-type-groups.store');
+        Route::get('document-type-groups/{documentTypeGroup}/edit', [DocumentTypeGroupController::class, 'edit'])
+            ->name('document-type-groups.edit');
+        Route::match(['put', 'patch'], 'document-type-groups/{documentTypeGroup}', [DocumentTypeGroupController::class, 'update'])
+            ->name('document-type-groups.update');
     });
-    Route::middleware('permission:document-types.delete')
-        ->delete('document-types/{documentType}', [DocumentTypeController::class, 'destroy'])->name('document-types.destroy');
+    Route::middleware('permission:document-types.delete')->group(function () {
+        Route::delete('document-types/{documentType}', [DocumentTypeController::class, 'destroy'])->name('document-types.destroy');
+        Route::delete('document-type-groups/{documentTypeGroup}', [DocumentTypeGroupController::class, 'destroy'])
+            ->name('document-type-groups.destroy');
+    });
 
     // The upload policy. Its own module, because loosening what the office
     // accepts is an administrative act, not a deploy.
     Route::middleware('permission:upload-settings.read')
         ->get('/upload-settings', [UploadSettingController::class, 'edit'])->name('upload-settings.edit');
     Route::middleware('permission:upload-settings.write')
-        ->match(['put', 'patch'], '/upload-settings/{setting}', [UploadSettingController::class, 'update'])->name('upload-settings.update');
+        // No `{setting}`: there is one policy, so the URL has nothing to name.
+        ->match(['put', 'patch'], '/upload-settings', [UploadSettingController::class, 'update'])->name('upload-settings.update');
 
     /*
      * Everything that has happened to a file or folder. Its own permission,
@@ -381,6 +586,8 @@ Route::middleware(['auth'])->group(function () {
  */
 Route::get('/s/{token}', [ShareLinkController::class, 'show'])
     ->where('token', '[A-Za-z0-9]{64}')->name('share.show');
+Route::post('/s/{token}/identify', [ShareLinkController::class, 'identify'])
+    ->where('token', '[A-Za-z0-9]{64}')->name('share.identify');
 Route::get('/s/{token}/file', [ShareLinkController::class, 'stream'])
     ->where('token', '[A-Za-z0-9]{64}')->name('share.stream');
 
@@ -422,8 +629,20 @@ Route::get('/files/viewer/{owner}/{file}', [FileStreamController::class, 'viewer
     ->name('files.viewer');
 
 /*
- * The public tracking-code view sits last on purpose: `documents/{code}` would
- * otherwise be shadowed by the authenticated `documents.show` route above, and
- * a QR label has to work for a signed-out reader of a public document.
+ * The tracking-code view sits last on purpose: `documents/{code}` would
+ * otherwise be shadowed by the authenticated `documents.show` route above.
+ *
+ * **One link, which answers whoever opens it.** It used to carry `auth`, so a
+ * signed-out reader was handed a sign-in form — no answer at all to somebody
+ * holding the folder, and the reason `/scan` already forwards a guest to the
+ * public lookup instead. The middleware is gone and `view()` forwards a guest
+ * to that same public door itself, before it touches the database.
+ *
+ * Nothing is disclosed that `/track` did not already disclose by code, and the
+ * forward lands on the throttled route rather than widening this one: a
+ * tracking code is still not a credential. What changed is only that the three
+ * readers — the tagged, the untagged and the signed-out — each get an answer
+ * about *this* document instead of one of them getting a login form.
  */
-Route::get('/documents/view/{code}', [DocumentController::class, 'view'])->name('documents.view');
+Route::get('/documents/view/{code}', [DocumentController::class, 'view'])
+    ->name('documents.view');

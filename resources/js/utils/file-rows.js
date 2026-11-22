@@ -113,6 +113,28 @@ export function rowActions(item, kind, mode = 'browse') {
     }
 
     if (can.rename) items.push({ key: 'rename', label: 'Rename', icon: 'fa-solid fa-pen' });
+
+    /*
+     * Replacing and reading the history sit beside Rename, because all three
+     * alter or describe an item in place rather than moving it somewhere.
+     *
+     * `can.replace` is resolved by the server through `FileManager::mayReplace()`
+     * and is deliberately **not** `can.rename`: a tracked document's bytes are
+     * its uploader's to change, even for somebody holding a manage share on
+     * the file, because a tracking code printed on a folder must not come to
+     * name content the uploader never approved.
+     *
+     * The history is offered only once there is one. A file at version 1 has
+     * nothing to show, and a menu entry that opens an empty panel is worse
+     * than no entry.
+     */
+    if (kind === 'file' && can.replace) {
+        items.push({ key: 'replace', label: 'Replace file', icon: 'fa-solid fa-arrow-up-from-bracket', hint: 'Saves the next version' });
+    }
+
+    if (kind === 'file' && can.view && (item.version ?? 1) > 1) {
+        items.push({ key: 'versions', label: 'Version history', icon: 'fa-solid fa-clock-rotate-left' });
+    }
     if (can.move) items.push({ key: 'move', label: 'Move', icon: 'fa-solid fa-arrow-right-arrow-left', hint: 'Choose a destination folder' });
     if (can.share) items.push({ key: 'share', label: 'Share a link', icon: 'fa-solid fa-link' });
     if (can.share) items.push({ key: 'privacy', label: 'Change privacy', icon: 'fa-solid fa-lock' });

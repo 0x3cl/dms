@@ -177,7 +177,11 @@ class User extends Authenticatable
     public function receivedDocuments(): BelongsToMany
     {
         return $this->belongsToMany(Document::class, 'document_recipients')
-            ->withPivot('notified_at')
+            ->withPivot('notified_at', 'revoked_at', 'revoked_by')
+            // A viewer who has been taken off keeps their row, because the
+            // removal is part of the record — but the tab is "what can I
+            // open", so it reads the live list. See Document::recipients().
+            ->wherePivotNull('revoked_at')
             ->withTimestamps();
     }
 
@@ -211,5 +215,19 @@ class User extends Authenticatable
             ->whereIn('action', DocumentAction::deliveryValues())
             ->distinct()
             ->pluck('document_id');
+    }
+
+    /**
+     * The channel this account's notifications are broadcast on.
+     *
+     * Laravel's default is `App.Models.User.{id}`. Named plainly here so
+     * `routes/channels.php` reads as a list of this app's channels rather
+     * than one framework-shaped name among three of ours — and so the
+     * authorization callback and the subscriber cannot drift apart over a
+     * namespace change.
+     */
+    public function receivesBroadcastNotificationsOn(): string
+    {
+        return 'users.'.$this->id;
     }
 }

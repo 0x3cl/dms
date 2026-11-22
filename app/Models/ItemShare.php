@@ -35,9 +35,17 @@ class ItemShare extends Model
         'revoked_at' => 'datetime',
     ];
 
+    /**
+     * The file or folder this grant is on — **including a trashed one**.
+     *
+     * Without `withTrashed()` a soft-deleted subject resolves to null, and
+     * every caller that asks "may this person share that?" then refuses, so
+     * access could not be taken away from an item sitting in the bin. A grant
+     * on a trashed item is still a live grant: the item can be restored.
+     */
     public function shareable(): MorphTo
     {
-        return $this->morphTo();
+        return $this->morphTo()->withTrashed();
     }
 
     public function user(): BelongsTo

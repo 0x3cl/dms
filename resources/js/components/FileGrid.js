@@ -20,7 +20,7 @@ import { accessBadge, readableSize, rowActions } from '../utils/file-rows';
 export default defineComponent({
     name: 'FileGrid',
     components: { ActionMenu, Badge, FileIcon, Link },
-    emits: ['open', 'preview', 'act'],
+    emits: ['open', 'preview', 'act', 'prefetch'],
     props: {
         folders: { type: Array, default: () => [] },
         files: { type: Array, default: () => [] },
@@ -54,15 +54,38 @@ export default defineComponent({
         </div>
 
         <div v-else class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            <article v-for="folder in folders" :key="'folder-' + folder.public_id" class="group relative flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-sky-300">
+            <!--
+                A folder card and a file card are the same shape.
+
+                They were not: the file card put a checkbox in the header and a
+                7rem thumbnail below it, while the folder card put its icon
+                where the checkbox goes and had no media block at all. So a
+                folder holding both rendered a ragged row — folder cards ~7rem
+                shorter, their controls on a different line from every file's —
+                and folders carried no select affordance even though the grid
+                was told it was selectable. One skeleton: select, menu, media,
+                name, meta, badges.
+            -->
+            <article v-for="folder in folders" :key="'folder-' + folder.public_id" class="group relative flex flex-col gap-3 rounded-2xl border bg-white p-4 shadow-sm transition" :class="isSelected(folder.public_id) ? 'border-[#00aeef] ring-4 ring-sky-100' : 'border-slate-200 hover:border-sky-300'">
                 <div class="flex items-start justify-between gap-2">
-                    <FileIcon folder />
+                    <label v-if="selectable" class="inline-flex items-center">
+                        <span class="sr-only">Select {{ folder.name }}</span>
+                        <input type="checkbox" class="h-4 w-4 rounded border-slate-300 accent-[#07559e]" :checked="isSelected(folder.public_id)" @change="$emit('open', { item: folder, kind: 'folder', action: 'select' })" />
+                    </label>
+                    <span v-else></span>
                     <ActionMenu v-if="actionsFor(folder, 'folder').length" :items="actionsFor(folder, 'folder')" @select="act(folder, 'folder', $event)" />
                 </div>
-                <Link :href="folderHref(folder.public_id)" class="min-w-0">
+
+                <!-- The media block, at the file card's height so a mixed row
+                     lines up. A folder has no thumbnail, so it is its glyph. -->
+                <Link :href="folderHref(folder.public_id)" class="flex min-h-[7rem] items-center justify-center overflow-hidden rounded-xl bg-slate-50 text-4xl text-amber-500">
+                    <i class="fa-solid fa-folder" aria-hidden="true"></i>
+                </Link>
+
+                <Link :href="folderHref(folder.public_id)" class="min-w-0 text-left">
                     <p class="truncate font-bold text-slate-800 group-hover:text-[#07559e]">{{ folder.name }}</p>
                     <p v-if="mode === 'trash'" class="mt-1 truncate text-xs text-slate-500">{{ folder.contains.folders }} folders · {{ folder.contains.files }} files</p>
-                    <p v-else class="mt-1 truncate text-xs text-slate-500">{{ folder.is_mine ? 'Folder' : folder.owner_name }}</p>
+                    <p v-else class="mt-1 truncate text-xs text-slate-500">Folder<span v-if="!folder.is_mine"> · {{ folder.owner_name }}</span></p>
                 </Link>
                 <div class="flex flex-wrap items-center gap-2">
                     <Badge v-if="mode !== 'trash'" :tone="folder.visibility_tone">{{ folder.visibility_label }}</Badge>
@@ -75,22 +98,35 @@ export default defineComponent({
             <article v-for="(file, fileIndex) in files" :data-tour="fileIndex === 0 ? 'file-row' : null" :key="'file-' + file.public_id" class="group relative flex flex-col gap-3 rounded-2xl border bg-white p-4 shadow-sm transition" :class="isSelected(file.public_id) ? 'border-[#00aeef] ring-4 ring-sky-100' : 'border-slate-200 hover:border-sky-300'">
                 <div class="flex items-start justify-between gap-2">
                     <label v-if="selectable" class="inline-flex items-center">
-                        <span class="sr-only">Select {{ file.name }}</span>
+                        <span class="sr-only">Select {{ file.display_name || file.name }}</span>
                         <input type="checkbox" class="h-4 w-4 rounded border-slate-300 accent-[#07559e]" :checked="isSelected(file.public_id)" @change="$emit('open', { item: file, kind: 'file', action: 'select' })" />
                     </label>
+                    <span v-else></span>
                     <ActionMenu v-if="actionsFor(file, 'file').length" :items="actionsFor(file, 'file')" @select="act(file, 'file', $event)" />
                 </div>
 
-                <button type="button" class="flex min-h-[7rem] items-center justify-center overflow-hidden rounded-xl bg-slate-50" :disabled="mode === 'trash'" @click="$emit('preview', file)">
-                    <img v-if="file.has_thumbnail" :src="'/files/' + file.owner_public_id + '/' + file.public_id + '?variant=thumb'" :alt="file.name" class="h-28 w-full object-cover" loading="lazy" />
+                <button type="button" class="flex min-h-[7rem] items-center justify-center overflow-hidden rounded-xl bg-slate-50" :disabled="mode === 'trash'" @click="$emit('preview', file)" @mouseenter="$emit('prefetch', file)" @focus="$emit('prefetch', file)">
+                    <!-- The version is in the URL for the reason the preview's is: a
+                         thumbnail response is cacheable and this URL is stable
+                         across a replacement, so without it a replaced file
+                         keeps showing the picture of what it used to be. -->
+                    <img v-if="file.has_thumbnail" :src="'/files/' + file.owner_public_id + '/' + file.public_id + '?variant=thumb&version=' + (file.version ?? 1)" :alt="file.name" class="h-28 w-full object-cover" loading="lazy" />
                     <FileIcon v-else :mime-type="file.mime_type" />
                 </button>
 
                 <button type="button" class="min-w-0 text-left" @click="$emit('preview', file)">
-                    <p class="truncate font-bold text-slate-800 group-hover:text-[#07559e]">{{ file.name }}</p>
+                    <p class="truncate font-bold text-slate-800 group-hover:text-[#07559e]">{{ file.display_name || file.name }}</p>
                     <p class="mt-1 truncate text-xs text-slate-500">{{ readableSize(file.size) }}<span v-if="!file.is_mine"> · {{ file.owner_name }}</span></p>
                 </button>
                 <div class="flex flex-wrap items-center gap-2">
+                    <!-- A tracked file is a document. Linking to it is the
+                         whole point: it used to sit here looking like any
+                         other file, with no way to reach its trail. -->
+                    <Link v-if="file.tracked" :href="file.tracked.url" @click.stop>
+                        <Badge tone="sky" :title="'Tracked as ' + file.tracked.code">
+                            <i class="fa-solid fa-qrcode mr-1.5" aria-hidden="true"></i>{{ file.tracked.code }}
+                        </Badge>
+                    </Link>
                     <Badge v-if="mode !== 'trash'" :tone="file.visibility_tone">{{ file.visibility_label }}</Badge>
                     <Badge v-if="accessBadge(file)" :tone="accessBadge(file).tone" :title="accessBadge(file).hint">
                         <i :class="accessBadge(file).icon + ' mr-1.5'" aria-hidden="true"></i>{{ accessBadge(file).label }}

@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Document;
 use App\Models\DocumentSeries;
 use App\Models\DocumentType;
+use App\Models\DocumentTypeGroup;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -66,13 +67,221 @@ class DocumentTypeTest extends TestCase
             'description' => 'Short briefing papers.',
             'is_active' => true,
             'position' => 50,
-        ])->assertRedirect('/document-types');
+            // Back to the set it belongs to: a type with no group lives in
+            // "Other", which is a real page rather than a gap.
+        ])->assertRedirect('/document-types/group/other');
 
         $type = DocumentType::query()->where('name', 'Policy Brief')->sole();
 
         // Uppercased on save, because the code is printed and compared.
         $this->assertSame('BRIEF', $type->code);
         $this->assertTrue(DocumentType::selectable()->contains('id', $type->id));
+    }
+
+    /**
+     * Types are offered under headings.
+     *
+     * The list had grown past the point where a flat dropdown is a list of
+     * choices and become a wall somebody reads top to bottom. The grouping is
+     * built on the server because the upload form and the file manager's
+     * tracking dialog both offer it, and two hand-built groupings is how one
+     * screen quietly offers a type the other does not.
+     */
+    public function test_types_are_offered_under_their_groups(): void
+    {
+        $grouped = DocumentType::grouped();
+
+        $this->assertNotEmpty($grouped);
+        $this->assertSame('Documents', $grouped[0]['label']);
+        $this->assertContains('MEMO', array_column($grouped[0]['options'], 'code'));
+
+        // Every seeded group is offered, in its own order.
+        $labels = array_column($grouped, 'label');
+        $this->assertSame(['Documents', 'Assets', 'Images', 'Videos'], $labels);
+    }
+
+    /**
+     * A type with no group is listed under "Other" rather than vanishing.
+     *
+     * That is what a *deleted* group must produce: `group_id` is
+     * `nullOnDelete`, because a group is an arrangement of the picker and a
+     * type is part of the office's record — deleting the first must never
+     * retire the second.
+     */
+    public function test_an_ungrouped_type_falls_under_other_and_last(): void
+    {
+        $group = DocumentTypeGroup::query()->where('code', 'VID')->sole();
+        $type = DocumentType::query()->create([
+            'code' => 'LOOSE', 'name' => 'Unfiled Thing', 'is_active' => true, 'position' => 999,
+            'group_id' => $group->id,
+        ]);
+
+        $group->delete();
+
+        $this->assertNull($type->fresh()->group_id);
+        $this->assertNotNull($type->fresh(), 'Deleting a group must not delete its types.');
+
+        $grouped = DocumentType::grouped();
+        $last = end($grouped);
+
+        $this->assertSame('Other', $last['label']);
+        $this->assertContains('LOOSE', array_column($last['options'], 'code'));
+    }
+
+    /**
+     * A group is created, renamed and deleted on its own, like the parent of
+     * a type that it is.
+     *
+     * It began as a name typed into the type form, which meant a group could
+     * be invented and then never renamed, reordered or removed — a list the
+     * office is stuck with the first time somebody mistypes a heading.
+     */
+    public function test_a_group_has_its_own_crud(): void
+    {
+        $admin = $this->admin();
+
+        $this->actingAs($admin)->post('/document-type-groups', [
+            'name' => 'Governance',
+            'description' => 'Board and management papers.',
+            'position' => 9,
+        ])->assertRedirect('/document-types?tab=groups');
+
+        $group = DocumentTypeGroup::query()->where('name', 'Governance')->sole();
+
+        // Derived, not asked for: unlike a type's code, a group's never
+        // reaches a tracking code, so there is nothing to decide.
+        $this->assertSame('GOVERNANCE', $group->code);
+
+        $this->actingAs($admin)->put("/document-type-groups/{$group->id}", [
+            'name' => 'Governance Papers',
+            'position' => 3,
+        ])->assertSessionHasNoErrors();
+
+        $group->refresh();
+
+        $this->assertSame('Governance Papers', $group->name);
+        $this->assertSame(3, $group->position);
+        // The handle does not follow the label: a seeder matches on it, so
+        // regenerating it would make the next run recreate this group.
+        $this->assertSame('GOVERNANCE', $group->code);
+    }
+
+    /** A type is filed under an existing group, chosen by id. */
+    public function test_a_type_is_filed_under_a_group(): void
+    {
+        $group = DocumentTypeGroup::query()->where('code', 'ASSET')->sole();
+
+        $this->actingAs($this->admin())->post('/document-types', [
+            'code' => 'minutes',
+            'name' => 'Minutes of the Meeting',
+            'is_active' => true,
+            'position' => 60,
+            'group_id' => $group->id,
+        ])->assertRedirect("/document-types/group/{$group->id}");
+
+        $this->assertSame($group->id, DocumentType::query()->where('code', 'MINUTES')->value('group_id'));
+    }
+
+    /** Deleting a group moves its types to Other; it never retires one. */
+    public function test_deleting_a_group_keeps_its_types(): void
+    {
+        $group = DocumentTypeGroup::query()->where('code', 'IMG')->sole();
+        $types = DocumentType::query()->where('group_id', $group->id)->pluck('id');
+
+        $this->assertNotEmpty($types);
+
+        $this->actingAs($this->admin())
+            ->delete("/document-type-groups/{$group->id}")
+            ->assertRedirect('/document-types?tab=groups');
+
+        $this->assertDatabaseMissing('document_type_groups', ['id' => $group->id]);
+        $this->assertSame($types->count(), DocumentType::query()->whereIn('id', $types)->whereNull('group_id')->count());
+    }
+
+    /**
+     * The module opens on the groups, and a group is opened to see its types.
+     *
+     * A flat table of every type answered the wrong question first: an office
+     * looking at twenty rows wants to know what *kinds* of thing it files
+     * before which exact type.
+     */
+    public function test_the_module_opens_on_the_groups(): void
+    {
+        $props = $this->actingAs($this->admin())->get('/document-types')
+            ->assertOk()->viewData('page')['props'];
+
+        $this->assertContains('Documents', array_column($props['groups'], 'name'));
+        // The count somebody is looking for is what is on offer today.
+        $this->assertGreaterThan(0, $props['groups'][0]['active_types_count']);
+    }
+
+    /** A group's page lists its types and nobody else's. */
+    public function test_a_group_lists_only_its_own_types(): void
+    {
+        $group = DocumentTypeGroup::query()->where('code', 'VID')->sole();
+
+        $codes = array_column(
+            $this->actingAs($this->admin())->get("/document-types/group/{$group->id}")
+                ->assertOk()->viewData('page')['props']['types']['data'],
+            'code',
+        );
+
+        $this->assertContains('VIDEO', $codes);
+        $this->assertNotContains('MEMO', $codes);
+    }
+
+    /**
+     * The ungrouped are a set with a page, not a gap.
+     *
+     * `group_id` is `nullOnDelete`, so deleting a group produces them — and a
+     * set that exists and cannot be opened is how rows go missing from a
+     * screen that looks complete.
+     */
+    public function test_the_ungrouped_types_are_reachable(): void
+    {
+        $loose = DocumentType::query()->create([
+            'code' => 'LOOSE', 'name' => 'Unfiled Thing', 'is_active' => true, 'position' => 999,
+        ]);
+
+        $props = $this->actingAs($this->admin())->get('/document-types/group/other')
+            ->assertOk()->viewData('page')['props'];
+
+        $this->assertContains($loose->code, array_column($props['types']['data'], 'code'));
+        $this->assertFalse($props['group']['editable']);
+
+        // And the landing says the set is there to be opened.
+        $this->assertSame(
+            1,
+            $this->actingAs($this->admin())->get('/document-types')
+                ->viewData('page')['props']['ungrouped']['types_count'],
+        );
+    }
+
+    /** An unknown set is a 404, not an empty list that looks like an answer. */
+    public function test_an_unknown_group_is_not_found(): void
+    {
+        $this->actingAs($this->admin())->get('/document-types/group/nonsense')->assertNotFound();
+        $this->actingAs($this->admin())->get('/document-types/group/999999')->assertNotFound();
+    }
+
+    /** Adding a type from inside a group opens the form already filed there. */
+    public function test_the_add_form_preselects_the_group_it_came_from(): void
+    {
+        $group = DocumentTypeGroup::query()->where('code', 'ASSET')->sole();
+
+        $props = $this->actingAs($this->admin())->get("/document-types/create?group={$group->id}")
+            ->assertOk()->viewData('page')['props'];
+
+        $this->assertSame($group->id, $props['presetGroup']);
+    }
+
+    /** Two groups with one name is two identical headings in the picker. */
+    public function test_a_group_name_is_unique(): void
+    {
+        $this->actingAs($this->admin())->post('/document-type-groups', [
+            'name' => 'Videos',
+            'position' => 1,
+        ])->assertSessionHasErrors('name');
     }
 
     /** A new type issues its own series, from 1, on its own prefix. */
@@ -123,8 +332,11 @@ class DocumentTypeTest extends TestCase
         $before = $document->fresh()->only(['code', 'title', 'type', 'document_type_id', 'file_id', 'status', 'visibility']);
 
         $this->actingAs($this->admin())
+            // `back()`: delete is pressed from a list that may be searched,
+            // filtered and on page three, and the person should stay there.
+            ->from('/document-types/group/all')
             ->delete("/document-types/{$type->id}")
-            ->assertRedirect('/document-types');
+            ->assertRedirect('/document-types/group/all');
 
         $this->assertSoftDeleted($type);
 
@@ -132,7 +344,7 @@ class DocumentTypeTest extends TestCase
 
         // Every column identical, the type link included.
         $this->assertSame($before, $after->only(array_keys($before)));
-        $this->assertSame('Memo', $after->type, 'The snapshot is what every screen renders.');
+        $this->assertSame($type->name, $after->type, 'The snapshot is what every screen renders.');
         $this->assertSame($type->id, $after->document_type_id, 'A soft delete keeps the link.');
     }
 
@@ -150,7 +362,7 @@ class DocumentTypeTest extends TestCase
             ->assertOk()
             ->viewData('page')['props']['document'];
 
-        $this->assertSame('Memo', $payload['type']);
+        $this->assertSame($type->name, $payload['type']);
     }
 
     /** It is still in the register, and still findable by its type filter. */
@@ -204,7 +416,7 @@ class DocumentTypeTest extends TestCase
 
         $this->assertNotNull($after);
         $this->assertNull($after->document_type_id);
-        $this->assertSame('Memo', $after->type);
+        $this->assertSame($type->name, $after->type);
 
         $this->actingAs($user)->get("/documents/view/{$document->code}")->assertOk();
     }
@@ -215,8 +427,9 @@ class DocumentTypeTest extends TestCase
         $type->delete();
 
         $this->actingAs($this->admin())
+            ->from('/document-types/group/all')
             ->post("/document-types/{$type->id}/restore")
-            ->assertRedirect('/document-types');
+            ->assertRedirect('/document-types/group/all');
 
         $this->assertNull($type->fresh()->deleted_at);
         $this->assertTrue(DocumentType::selectable()->contains('id', $type->id));
@@ -296,11 +509,16 @@ class DocumentTypeTest extends TestCase
         $type = DocumentType::query()->where('code', 'MEMO')->sole();
         $document = $this->upload($user, $type);
 
+        // Captured before the rename, because that is the whole assertion:
+        // the snapshot keeps what the type was called when the document was
+        // filed, whatever it is called now.
+        $filedAs = $type->name;
+
         $this->actingAs($this->admin())->put("/document-types/{$type->id}", [
             'code' => 'MEMO', 'name' => 'Internal Memorandum', 'is_active' => true, 'position' => $type->position,
         ])->assertRedirect();
 
-        $this->assertSame('Memo', $document->fresh()->type);
+        $this->assertSame($filedAs, $document->fresh()->type);
         $this->assertSame('Internal Memorandum', $type->fresh()->name);
     }
 }

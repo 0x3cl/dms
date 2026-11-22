@@ -6,7 +6,7 @@
 const upload = {
     key: 'upload-document',
     label: 'Upload and track a document',
-    hint: 'Tracking code, QR label, who can see it',
+    hint: 'Tracking code, QR Tracker, who can see it',
     module: 'Documents',
     icon: 'fa-solid fa-cloud-arrow-up',
     paths: ['/documents'],
@@ -18,7 +18,7 @@ const upload = {
                 {
                     popover: {
                         title: 'Tracked documents',
-                        description: 'A tracked document gets a code and a printable QR label, and every view, download and hand-off after that is recorded. This is the register of the ones you are party to.',
+                        description: 'A tracked document gets a code and a printable QR Tracker, and every view, download and hand-off after that is recorded. This is the register of the ones you are party to.',
                     },
                 },
                 {
@@ -66,7 +66,7 @@ const upload = {
                     element: '[data-tour="document-submit"]',
                     popover: {
                         title: 'Then print the label',
-                        description: 'After uploading you get the tracking code and a QR label to print and stick on the physical folder. Scanning it opens this document.',
+                        description: 'After uploading you get the tracking code and a QR Tracker to print and stick on the physical folder. Scanning it opens this document.',
                     },
                 },
             ],

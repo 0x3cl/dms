@@ -97,6 +97,15 @@ class OwnershipTransferService
                 ->where('is_root', false)
                 ->update(['user_id' => $to->id, 'owner_name' => $to->name]);
 
+            /*
+             * `user_id` and `owner_name` only. The `version_created_by_*`
+             * columns are **not** rewritten, for the reason `uploader_name`
+             * below is not: ownership is a fact about now, and who put a
+             * version there is a fact about then. Rewriting them would make
+             * every file assert that whoever holds it today uploaded its first
+             * version — and `file_versions` rows are untouched for the same
+             * reason, since each one is a record of something that happened.
+             */
             $fileCount = File::query()
                 ->withTrashed()
                 ->where('user_id', $from->id)

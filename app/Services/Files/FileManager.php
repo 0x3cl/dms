@@ -3,8 +3,10 @@
 namespace App\Services\Files;
 
 use App\Enums\ActivityAction;
+use App\Enums\DocumentAction;
 use App\Enums\FileAbility;
 use App\Enums\FileVisibility;
+use App\Models\DocumentLog;
 use App\Models\File;
 use App\Models\Folder;
 use App\Models\User;
@@ -12,6 +14,7 @@ use App\Services\Access\AccessResolver;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use RuntimeException;
 
@@ -35,6 +38,7 @@ class FileManager
         private readonly FileStorage $storage,
         private readonly FileEventRecorder $events,
         private readonly ThumbnailGenerator $thumbnails,
+        private readonly FileVersionService $versions,
     ) {}
 
     public function rootFor(User $user): Folder
@@ -72,7 +76,25 @@ class FileManager
         $this->assertNameFree($this->containerOf($item), $name, $item);
 
         return DB::transaction(function () use ($actor, $item, $name, $from, $request): File|Folder {
-            $item->update(['name' => $name]);
+            /*
+             * A rename sets both names on a file, and that is the other half
+             * of "a row is called what its current version is called".
+             *
+             * `name` is the folder's label and half of the `(folder_id,
+             * name)` unique index; `original_name` is what the current
+             * version is called, and it is what a download arrives as and
+             * what every other surface renders. Writing only the first meant
+             * renaming `draft.pdf` to `Budget 2026.pdf` left the download
+             * still arriving as `draft.pdf` — the person had renamed the
+             * label and nothing they could see afterwards agreed with it.
+             *
+             * It rewrites no history. The superseded rows in `file_versions`
+             * keep the names they were uploaded under, and the rename itself
+             * is recorded below with both sides of it.
+             */
+            $item->update($item instanceof File
+                ? ['name' => $name, 'original_name' => $name]
+                : ['name' => $name]);
 
             $this->events->record(ActivityAction::Renamed, $item, $actor, $request, [
                 'from' => $from,
@@ -277,6 +299,264 @@ class FileManager
         });
     }
 
+    // ----------------------------------------------------------------- versions
+
+    /**
+     * May this person put new bytes behind this file?
+     *
+     * Two conditions, and the second is the one that matters.
+     *
+     * `FileAbility::Rename` is the "may alter this item" grant, which is right
+     * — but it is reachable through a share: `ShareAbility::Manage` carries it.
+     * For an ordinary file that is exactly what a manage share is for. For a
+     * **tracked document** it would be a side door of a kind this application
+     * does not otherwise have: whoever held a manage share could swap the bytes
+     * that a tracking code *printed on a folder* names, while the code, the
+     * label and the share link all stayed intact, and the uploader would never
+     * have approved the content their name is against. Replacing a tracked
+     * document's file has always been behind `DocumentController::owns()`, and
+     * opening a second door into personal storage must not quietly widen it.
+     *
+     * So this is the one source of truth for both the refusal below and the
+     * `can.replace` flag on a file row — they cannot disagree, because they ask
+     * the same method.
+     */
+    public function mayReplace(User $actor, File $file): bool
+    {
+        if (! $this->access->allows($actor, $file, FileAbility::Rename)) {
+            return false;
+        }
+
+        $document = $file->document;
+
+        return $document === null || (int) $document->user_id === (int) $actor->id;
+    }
+
+    /**
+     * Supersede a file's bytes: version N becomes N+1.
+     *
+     * The upload policy is checked by the caller, before this is reached, for
+     * the reason every other upload path does it that way: a refused file must
+     * store nothing, and that means refusing before a transaction opens.
+     *
+     * Three things here are load-bearing.
+     *
+     * **The row is locked.** Two replacements arriving together would both read
+     * version 1 and both try to become version 2. `unique(file_id, version)`
+     * turns that into a failed insert rather than a corrupted history, which is
+     * the right backstop — but a lock turns it into a correct version 3, which
+     * is the right outcome. `FolderService::rootFor()` already establishes
+     * `lockForUpdate()` as this codebase's answer to exactly this shape.
+     *
+     * **Bytes written are tracked and unlinked on failure.** Disk writes are
+     * not transactional, so a rollback would otherwise leave bytes that no row
+     * references — and that `files:purge --orphans` could never find, because it
+     * only knows about `files` rows. The outgoing version's bytes are never
+     * touched, so the worst case really is one stray blob. This is the
+     * `ArchiveService` pattern.
+     *
+     * **A tracked document's trail gets its own row**, written here rather than
+     * mirrored by `FileEventRecorder`, and `TrackingCodeService` is never
+     * called: the series counter never goes backwards, so issuing a code for a
+     * replacement would burn a number and change the string printed on paper.
+     */
+    public function replace(
+        User $actor,
+        File $file,
+        UploadedFile $upload,
+        ?string $note = null,
+        ?Request $request = null,
+    ): File {
+        $this->assertReplaceable($actor, $file);
+
+        /*
+         * **Identical bytes are allowed, and recorded as identical.**
+         *
+         * This used to be a refusal — "that is the file already stored" — on
+         * the reasoning that a version identical to the one it replaces is a
+         * fabricated entry in a history whose whole purpose is to be
+         * truthful. The reasoning was right about the goal and wrong about
+         * the means, in two ways.
+         *
+         * It is not true that nothing changed. A replacement rewrites
+         * `original_name`, the extension and the MIME type, so re-uploading
+         * the same document under the name a browser gave it —
+         * `template(1).docx` for `template.docx`, which is what downloading
+         * your own file and sending it back produces — is a real change that
+         * this refused outright.
+         *
+         * And it was refused from the *document edit form*, where the file
+         * picker sits beside the title and the type. Leaving the same file in
+         * it, which is the natural thing to do, failed the whole save: the
+         * title change went with it, and the message named the file rather
+         * than explaining why the title would not save.
+         *
+         * So the history stays truthful by **saying** the bytes are
+         * unchanged rather than by refusing to record what happened. That is
+         * the same principle as everywhere else here: an audit trail records
+         * the act, and the act was a replacement.
+         */
+        $unchanged = $this->versions->isUnchanged($file, $upload);
+
+        return $this->writeVersion(
+            $file,
+            $actor,
+            ActivityAction::VersionReplaced,
+            $request,
+            fn (File $locked, array &$written): File => $this->versions
+                ->supersede($locked, $upload, $actor, $note, $written),
+            fn (File $locked): array => [
+                'version' => $locked->versionNumber(),
+                'from_version' => $locked->versionNumber() - 1,
+                'size' => $locked->sizeBytes(),
+                // Only when it is true: a false on every other row would be
+                // noise in a table read by people.
+                ...($unchanged ? ['identical_bytes' => true] : []),
+            ],
+            fn (File $locked): ?string => $note,
+        );
+    }
+
+    /**
+     * Bring an earlier version back, as a new version.
+     *
+     * No upload-policy check, and that is deliberate rather than an oversight:
+     * these bytes already satisfied the policy once, and re-checking would mean
+     * a policy tightened since made a file's own history unrevertable — a
+     * settings change deciding something about the past.
+     */
+    public function revertTo(
+        User $actor,
+        File $file,
+        int $version,
+        ?string $note = null,
+        ?Request $request = null,
+    ): File {
+        $this->assertReplaceable($actor, $file);
+
+        if ($version === $file->versionNumber()) {
+            throw ValidationException::withMessages([
+                'version' => 'That version is already the current one.',
+            ]);
+        }
+
+        $source = $file->versions()->where('version', $version)->first();
+
+        if ($source === null) {
+            throw ValidationException::withMessages([
+                'version' => 'That version is not part of this file\'s history.',
+            ]);
+        }
+
+        return $this->writeVersion(
+            $file,
+            $actor,
+            ActivityAction::VersionReverted,
+            $request,
+            fn (File $locked, array &$written): File => $this->versions
+                ->revert($locked, $source, $actor, $note, $written),
+            fn (File $locked): array => [
+                'version' => $locked->versionNumber(),
+                'restored_from' => $version,
+                'size' => $locked->sizeBytes(),
+            ],
+            // The document trail says a replacement happened and what it was,
+            // because to a reader that is what this is. The mechanics —
+            // "version 4 is a copy of version 1" — stay in the activity log.
+            fn (File $locked): ?string => trim("Reverted to version {$version}. ".(string) $note),
+        );
+    }
+
+    /**
+     * The shared body of a replacement and a revert.
+     *
+     * One place, because the two differ only in where the new bytes come from
+     * and what the trail says about them — everything that makes either *safe*
+     * is identical, and two copies of a lock, a path-cleanup and a transaction
+     * boundary is how one of them silently loses a piece.
+     *
+     * @param  callable(File, array<int, string>): File  $write
+     * @param  callable(File): array<string, mixed>  $context
+     * @param  callable(File): ?string  $remarks
+     */
+    private function writeVersion(
+        File $file,
+        User $actor,
+        ActivityAction $action,
+        ?Request $request,
+        callable $write,
+        callable $context,
+        callable $remarks,
+    ): File {
+        /** @var list<string> $written */
+        $written = [];
+
+        try {
+            return $this->attempt(function () use ($file, $actor, $action, $request, $write, $context, $remarks, &$written): File {
+                $locked = File::query()->whereKey($file->getKey())->lockForUpdate()->first() ?? $file;
+
+                $write($locked, $written);
+
+                $document = $locked->document;
+
+                if ($document !== null) {
+                    DocumentLog::record(
+                        $document,
+                        DocumentAction::FileReplaced,
+                        $actor,
+                        $remarks($locked) ?: null,
+                        $request?->ip(),
+                        null,
+                        $locked->versionNumber(),
+                    );
+
+                    // The register prints this beside the tracking code, so it
+                    // follows the bytes it names.
+                    $document->update(['file_name' => $locked->original_name]);
+                }
+
+                $this->events->record(
+                    $action,
+                    $locked,
+                    $actor,
+                    $request,
+                    $context($locked),
+                    $locked->versionNumber(),
+                );
+
+                $file->setRawAttributes($locked->getAttributes());
+
+                return $locked;
+            }, $action, $file, $actor, $request);
+        } catch (\Throwable $e) {
+            /*
+             * After the rollback, never inside it. These are the bytes this
+             * operation wrote and nothing else: a superseded version's path is
+             * never in `$written`, because those bytes predate the attempt and
+             * are still the ones somebody's history points at.
+             */
+            foreach ($written as $path) {
+                $this->storage->forget($path);
+            }
+
+            throw $e;
+        }
+    }
+
+    /** The refusal behind both, phrased for whichever reason applies. */
+    private function assertReplaceable(User $actor, File $file): void
+    {
+        if ($this->mayReplace($actor, $file)) {
+            return;
+        }
+
+        throw ValidationException::withMessages([
+            'file' => $file->document !== null
+                ? 'Only the person who uploaded that document can replace its file.'
+                : 'You cannot replace that file.',
+        ]);
+    }
+
     // ----------------------------------------------------------------- deleting
 
     /**
@@ -295,15 +575,25 @@ class FileManager
             throw new RuntimeException('A root folder cannot be deleted.');
         }
 
-        $this->attempt(function () use ($actor, $item, $request): void {
+        /*
+         * One identifier across everything this delete touches.
+         *
+         * `restore()` reads it to bring the same set back. Without it the only
+         * way to find a folder's trashed children would be "everything trashed
+         * under here", which would also revive a child somebody deleted on its
+         * own last week — they never asked for it back.
+         */
+        $batch = (string) Str::uuid();
+
+        $this->attempt(function () use ($actor, $item, $request, $batch): void {
             if ($item instanceof Folder) {
                 $descendants = Folder::query()->subtreeOf($item)->get();
+                $files = File::query()->whereIn('folder_id', $descendants->pluck('id'))->get();
 
-                File::query()->whereIn('folder_id', $descendants->pluck('id'))->get()
-                    ->each(function (File $file) use ($actor, $request): void {
-                        $this->events->record(ActivityAction::Deleted, $file, $actor, $request, ['via' => 'folder']);
-                        $file->delete();
-                    });
+                $files->each(function (File $file) use ($actor, $request): void {
+                    $this->events->record(ActivityAction::Deleted, $file, $actor, $request, ['via' => 'folder']);
+                    $file->delete();
+                });
 
                 // Deepest first, so a parent is never removed before its child.
                 $descendants->sortByDesc('depth')->each(function (Folder $folder) use ($actor, $item, $request): void {
@@ -312,8 +602,17 @@ class FileManager
                     }
                     $folder->delete();
                 });
+
+                /*
+                 * Stamped after the fact, in bulk. `SoftDeletes::runSoftDelete`
+                 * writes only `deleted_at`, so setting the attribute before
+                 * `delete()` would not persist it.
+                 */
+                $this->stamp(File::query(), $files->pluck('id'), $batch);
+                $this->stamp(Folder::query(), $descendants->pluck('id'), $batch);
             } else {
                 $item->delete();
+                $this->stamp(File::query(), collect([$item->id]), $batch);
             }
 
             $this->events->record(ActivityAction::Deleted, $item, $actor, $request);
@@ -359,6 +658,10 @@ class FileManager
             $name = $this->freeName($container, $originalName, $item);
 
             if ($item instanceof Folder) {
+                // Captured before restore() clears it, because the subtree walk
+                // is keyed on it.
+                $batch = $item->deleted_batch;
+
                 $item->restore();
 
                 if ($reattached) {
@@ -368,6 +671,10 @@ class FileManager
                 if ($name !== $originalName) {
                     $item->update(['name' => $name]);
                 }
+
+                // Everything the same delete took, back with it.
+                $item->deleted_batch = $batch;
+                $this->restoreSubtreeOf($item);
             } else {
                 $item->restore();
                 $item->update([
@@ -456,6 +763,59 @@ class FileManager
 
         $this->storage->delete($file);
         $file->forceDelete();
+    }
+
+    /**
+     * Mark a set of just-trashed rows as belonging to one delete.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder<covariant \Illuminate\Database\Eloquent\Model>  $query
+     * @param  \Illuminate\Support\Collection<int, int>  $ids
+     */
+    private function stamp($query, $ids, string $batch): void
+    {
+        if ($ids->isEmpty()) {
+            return;
+        }
+
+        $query->withTrashed()->whereIn('id', $ids)->update(['deleted_batch' => $batch]);
+    }
+
+    /**
+     * Bring back everything the same delete took.
+     *
+     * Deleting a folder trashes its whole subtree, so restoring the folder
+     * alone returned an empty one — the children stayed soft-deleted and, not
+     * being listed at the top level of the trash either, were reachable from
+     * nowhere. Only rows carrying this item's own `deleted_batch` come back:
+     * a child trashed separately and earlier stays trashed, because nobody
+     * asked for that one.
+     *
+     * Rows trashed before the batch column existed carry null, and null
+     * matches nothing — they restore item-and-ancestors as they always did,
+     * rather than dragging back every unrelated row that also has no batch.
+     */
+    private function restoreSubtreeOf(Folder $folder): void
+    {
+        $batch = $folder->deleted_batch;
+
+        if ($batch === null) {
+            return;
+        }
+
+        $descendants = Folder::withTrashed()->subtreeOf($folder)->get();
+
+        // Shallowest first, so a folder is never visible before its container.
+        $descendants
+            ->where('id', '!=', $folder->id)
+            ->where('deleted_batch', $batch)
+            ->sortBy('depth')
+            ->each(fn (Folder $child) => $child->restore());
+
+        File::withTrashed()
+            ->whereIn('folder_id', $descendants->pluck('id'))
+            ->where('deleted_batch', $batch)
+            ->get()
+            ->each(fn (File $file) => $file->restore());
     }
 
     /**

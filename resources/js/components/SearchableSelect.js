@@ -9,6 +9,18 @@ import { computed, defineComponent, nextTick, onBeforeUnmount, onMounted, ref, w
  * trigger shows what is chosen, the panel shows what is choosable, and typing
  * narrows it. Options may carry an `icon`, which is shown in both places.
  *
+ * **Options may be grouped.** Pass `[{ label, options: [...] }]` and the panel
+ * renders a heading before each run. That is the first question a long list
+ * asks — what kind of thing is this? — so the second one is asked of six
+ * options rather than twenty. Grouping is a property of the *list*, not of
+ * this component: the server sends the arrangement (see
+ * `DocumentType::grouped()`), because two screens offering the same list must
+ * not group it two ways.
+ *
+ * Flat arrays keep working untouched, and search still runs across every
+ * option — a heading narrows the eye, it must never hide a match from the
+ * keyboard. A group's own name matches too, so typing "video" finds the group.
+ *
  * Keyboard: type to filter, Up/Down to move, Enter to take the highlighted
  * option, Escape to close without changing anything.
  */
@@ -32,13 +44,27 @@ export default defineComponent({
         const root = ref(null);
         const searchInput = ref(null);
 
-        const selected = computed(() => props.options.find((option) => option.value === props.modelValue) ?? null);
+        /*
+         * One flat list underneath, whatever shape came in.
+         *
+         * Everything else here — matching, the keyboard cursor, the selected
+         * label — works on options, not on headings, so a grouped list is
+         * flattened once and each option remembers which heading it came
+         * from. The template puts the headings back by watching where `group`
+         * changes, which also means a search that matches two options from
+         * different groups still renders both headings correctly.
+         */
+        const flat = computed(() => props.options.flatMap((entry) => (Array.isArray(entry.options)
+            ? entry.options.map((option) => ({ ...option, group: entry.label }))
+            : [entry])));
+
+        const selected = computed(() => flat.value.find((option) => option.value === props.modelValue) ?? null);
         const matches = computed(() => {
             const needle = search.value.trim().toLowerCase();
 
             return needle === ''
-                ? props.options
-                : props.options.filter((option) => String(option.label).toLowerCase().includes(needle));
+                ? flat.value
+                : flat.value.filter((option) => `${option.label} ${option.group ?? ''}`.toLowerCase().includes(needle));
         });
 
         const close = () => { open.value = false; search.value = ''; };
@@ -120,7 +146,14 @@ export default defineComponent({
                 </div>
             </div>
             <ul class="max-h-72 overflow-y-auto py-1" role="listbox">
-                <li v-for="(option, index) in matches" :key="option.value">
+                <template v-for="(option, index) in matches" :key="option.value">
+                    <!-- A heading wherever the group changes, which is every
+                         boundary in an unfiltered list and only the real ones
+                         in a filtered one. -->
+                    <li v-if="option.group && option.group !== matches[index - 1]?.group" class="px-3 pb-1 pt-3 text-[11px] font-bold uppercase tracking-[.14em] text-slate-400">
+                        {{ option.group }}
+                    </li>
+                    <li>
                     <button
                         type="button"
                         role="option"
@@ -135,7 +168,8 @@ export default defineComponent({
                         <span class="min-w-0 flex-1 text-sm font-semibold leading-5">{{ option.label }}</span>
                         <i v-if="option.value === modelValue" class="fa-solid fa-circle-check shrink-0 text-[#00aeef]" aria-hidden="true"></i>
                     </button>
-                </li>
+                    </li>
+                </template>
                 <li v-if="matches.length === 0" class="px-4 py-6 text-center text-sm text-slate-500">{{ emptyText }}</li>
             </ul>
         </div>

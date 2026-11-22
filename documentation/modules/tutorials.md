@@ -27,7 +27,7 @@ Porting that machinery would have been dead code pretending to be capability, wh
 | Set up roles and permissions | `roles.write` | what a role is, and what a permission is *not* |
 | Your account and theme | everyone | tabs, theme, closing the account |
 
-`permission: null` is used only where the route genuinely is open to any signed-in user — or, for the tracking tour, deliberately public, because a QR label has to resolve for whoever is holding the folder.
+`permission: null` is used only where the route genuinely is open to any signed-in user, which now includes the tracking tour: `/documents/track` is behind `auth`, because a tracking code is printed on the folder and is not a credential. Anybody with an account may track. Somebody without one has the public `/track`, which describes a public document and tells them only the classification of a restricted one, and a share link when they need a copy.
 
 > **Trap, and it happened during the screen merges.** An anchor a tour references but no markup defines is a *silent* break: the step is dropped or falls back and nothing fails. Folding "All Documents" into a tab and "Shared with Me" into My Files moved or removed three anchors between them — the register tour's page href, the upload tour's `add-button` (now `documents-upload`) and the sharing tour's `/files/shared` page. Scan the tour files for `[data-tour="…"]` and diff against the markup after touching any page a tour visits.
 

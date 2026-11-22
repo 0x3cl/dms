@@ -53,8 +53,8 @@ export default {
                 },
                 {
                     popover: {
-                        title: 'Share links',
-                        description: 'The Share option on a file or folder makes a link. It works for whoever holds it, so it can be view-only, expire, be limited to a number of opens, and be revoked at any time. It never allows renaming or deleting, and never works for a confidential item — even if the item became confidential after you sent the link.',
+                        title: 'One share link, which you can change',
+                        description: 'The Share option on a file or folder makes a link, and an item has one at a time — so there is never a question of which link somebody was sent. It can be view-only, expire, be limited to a number of opens, and be revoked. Changing its terms keeps the same URL, so nobody you have already sent it to is cut off. It never allows renaming or deleting, and never works for a confidential item, even if the item became confidential after you sent the link.',
                     },
                 },
             ],

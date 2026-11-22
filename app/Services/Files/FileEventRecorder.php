@@ -28,6 +28,17 @@ use Illuminate\Http\Request;
  *
  * The one place these two tables are written together, so the rule about which
  * events cross over exists once.
+ *
+ * **A replacement crosses over too, and deliberately not through this map.**
+ * `DocumentAction::FileReplaced` is written directly by
+ * App\Services\Files\FileVersionService's caller, `FileManager::replace()`,
+ * because this map exists for actions fired from four different doors — the
+ * stream controller, the preview descriptor, the document page, a share link —
+ * which all need one mirroring point. A replacement has exactly one writer.
+ * Routing it through here would mean every future action added beside these two
+ * entries is one typo away from appearing in every document's public trail, and
+ * it would need a second entry for a revert, which must *not* mirror
+ * separately. So this map stays at two entries, forever if possible.
  */
 class FileEventRecorder
 {
@@ -51,11 +62,12 @@ class FileEventRecorder
         ?User $actor,
         ?Request $request = null,
         array $context = [],
+        ?int $version = null,
     ): ActivityLog {
-        $entry = ActivityLog::record($actor, $action, $subject, $context, $request);
+        $entry = ActivityLog::record($actor, $action, $subject, $context, $request, $version);
 
         if ($subject instanceof File) {
-            $this->mirrorToDocumentTrail($action, $subject, $actor, $request);
+            $this->mirrorToDocumentTrail($action, $subject, $actor, $request, $version);
         }
 
         return $entry;
@@ -73,6 +85,12 @@ class FileEventRecorder
      * inside the window is treated as the same event. The window is short
      * enough that genuinely opening something again later is still recorded.
      *
+     * **The version is part of the key**, and leaving it out would be a bug in
+     * the opposite direction: previewing version 1 and then version 2 inside
+     * five minutes are two different things being opened, and recording only
+     * the first would lose exactly the version-scoped history this column was
+     * added for.
+     *
      * @param  array<string, mixed>  $context
      */
     public function recordOnce(
@@ -82,12 +100,16 @@ class FileEventRecorder
         ?Request $request = null,
         array $context = [],
         int $withinMinutes = 5,
+        ?int $version = null,
     ): ?ActivityLog {
+        $subjectVersion = $version ?? ($subject instanceof File ? $subject->versionNumber() : null);
+
         $alreadyRecorded = ActivityLog::query()
             ->where('action', $action->value)
             ->where('subject_type', $subject::class)
             ->where('subject_id', $subject->getKey())
             ->where('actor_id', $actor?->id)
+            ->where('subject_version', $subjectVersion)
             ->where('occurred_at', '>=', now()->subMinutes($withinMinutes))
             ->exists();
 
@@ -95,7 +117,7 @@ class FileEventRecorder
             return null;
         }
 
-        return $this->record($action, $subject, $actor, $request, $context);
+        return $this->record($action, $subject, $actor, $request, $context, $subjectVersion);
     }
 
     /**
@@ -111,6 +133,7 @@ class FileEventRecorder
         File $file,
         ?User $actor,
         ?Request $request,
+        ?int $version = null,
     ): void {
         $equivalent = self::DOCUMENT_EQUIVALENTS[$action->value] ?? null;
 
@@ -124,7 +147,12 @@ class FileEventRecorder
             return;
         }
 
-        $log = DocumentLog::record($document, $equivalent, $actor, null, $request?->ip());
+        /*
+         * The version is passed through rather than derived, because this is
+         * the path that serves a *superseded* version: deriving it would
+         * record the view of version 1 against whatever is current now.
+         */
+        $log = DocumentLog::record($document, $equivalent, $actor, null, $request?->ip(), null, $version);
 
         if ($equivalent === DocumentAction::Downloaded) {
             DocumentDownload::register($document, $actor, $log, $request?->ip());

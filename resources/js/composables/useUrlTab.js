@@ -6,12 +6,15 @@ import { ref, watch } from 'vue';
  * switching a tab never needs new data, and a round trip per click would also
  * re-record anything the page logs on load.
  *
- * **Each tab set names its own parameter.** `?tab=` is already three different
- * things depending on the page — the index pages' server-side For you /
- * Records filter, the AOC signing sheet's signatory group, the quotation
- * drawer's own panel — and several pages carry more than one tab set at once,
- * so a shared name would have them overwrite each other. `?tab=` stays with
- * whichever set owns the page; everything else takes a name of its own.
+ * **A page's tab set is `?tab=`.** That is the name to reach for, and every
+ * tab set in this application uses it today. The parameter is an argument
+ * rather than a constant for one reason: a page carrying **two** tab sets at
+ * once cannot have them both write `?tab=`, or each click would overwrite the
+ * other's position. In that case `?tab=` stays with the set that owns the page
+ * and the second takes a name of its own.
+ *
+ * A filter *within* a tab — a chip row, a category selector — is not a second
+ * tab set and does not belong in the URL at all.
  *
  * The default value is kept out of the URL, so an untouched page has a clean
  * address and only a deliberate choice shows up in it.

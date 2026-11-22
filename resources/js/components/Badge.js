@@ -6,6 +6,17 @@ const TONE_CLASSES = {
     emerald: 'bg-emerald-100 text-emerald-700',
     rose: 'bg-rose-100 text-rose-700',
     amber: 'bg-amber-100 text-amber-700',
+
+    /*
+     * The three access levels, and the only reason they are separate tones
+     * from emerald/rose/amber above: a traffic light is read without being
+     * read — green is open, orange is restricted, red is closed — and the
+     * office asked for exactly that. Keeping them distinct also means
+     * recolouring a level never recolours an unrelated status pill.
+     */
+    green: 'bg-green-100 text-green-700',
+    orange: 'bg-orange-100 text-orange-700',
+    red: 'bg-red-100 text-red-700',
 };
 
 /**

@@ -19,7 +19,7 @@ export default {
                 {
                     popover: {
                         title: 'You have the paper, not the file',
-                        description: 'Two ways in: type the tracking code, or scan the QR label with your camera.',
+                        description: 'Two ways in: type the tracking code, or scan the QR Tracker with your camera.',
                     },
                 },
                 {

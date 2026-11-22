@@ -59,6 +59,12 @@ Two things purge, and they are for different situations.
 
 **By hand, out of the trash.** `FileManager::purge()` erases a trashed item — a folder's whole subtree with it, deepest first, because `parent_id` restricts — and the bytes go with the row. Only a trashed item, only its owner or an administrator, and behind a four-digit confirmation code the server issued and spends (`App\Services\Files\DeletionConfirmation`, and its own purpose, so a code issued for the trash does not satisfy this). One activity row per subject, written **before** the delete while there is still a name to snapshot.
 
+> **A purge takes every version's bytes.** `file_versions.file_id` cascades, so purging a file drops its version rows by itself — which is the danger, not the safety: without `FileStorage::delete()` unlinking each version's `storage_path` and thumbnail, the rows vanish while their bytes stay on disk, referenced by nothing that could ever find them again. A `files` row is the only thing that knows where its versions are. Covered by `test_a_purge_removes_every_versions_bytes`.
+
+> **A transfer moves ownership, not the record of who did what.** `OwnershipTransferService` rewrites `user_id` and `owner_name` and pointedly leaves `files.version_created_by_*` and every `file_versions` row alone — the same distinction it already draws for `documents.uploader_name`. Ownership is a fact about now; who put a version there is a fact about then.
+
+> **A replacement no longer orphans a row**, so `files:purge --orphans` has nothing new to sweep. It is kept for what the old behaviour left behind, which is unattributable by construction and is swept rather than adopted as version 1 — see `files.md` → Versioning.
+
 > **The database is what makes a restore safe.** `files.folder_id` and `folders.parent_id` are `restrictOnDelete`, so nothing can be purged out from under a descendant — which is why `FileManager::restore()`'s "the original folder is gone" branch is a fail-safe rather than a routine path. Purging a folder works because the service walks the subtree in the right order, not because the constraint is lax.
 
 **On a schedule, for everything nobody came back for:**

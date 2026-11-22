@@ -64,7 +64,7 @@ class FileLifecycleTest extends TestCase
         );
     }
 
-    private function code(User $actor, string $purpose = 'delete'): string
+    private function code(User $actor, string $purpose = 'purge'): string
     {
         return $this->actingAs($actor)
             ->postJson('/files/confirm-code', ['purpose' => $purpose])
@@ -73,11 +73,24 @@ class FileLifecycleTest extends TestCase
     }
 
     /**
+     * Move to trash. No confirmation code: the act is reversible, so it is
+     * confirmed by pressing the button like everything else here.
+     *
      * @param  list<array{kind: string, public_id: string}>  $items
      */
-    private function destroy(User $actor, array $items, ?string $code = null)
+    private function destroy(User $actor, array $items)
     {
-        return $this->actingAs($actor)->post('/files/delete', [
+        return $this->actingAs($actor)->post('/files/delete', ['items' => $items]);
+    }
+
+    /**
+     * Erase, which is the one operation behind a typed code.
+     *
+     * @param  list<array{kind: string, public_id: string}>  $items
+     */
+    private function purgeItems(User $actor, array $items, ?string $code = null)
+    {
+        return $this->actingAs($actor)->post('/files/purge', [
             'items' => $items,
             'confirmation' => $code ?? $this->code($actor),
         ]);
@@ -85,30 +98,52 @@ class FileLifecycleTest extends TestCase
 
     // ------------------------------------------------------- the typed code
 
-    public function test_a_delete_without_a_confirmation_code_is_refused(): void
+    /**
+     * Moving to trash asks for no code, and that is deliberate.
+     *
+     * It used to demand the same four digits a purge does, which put identical
+     * friction on a reversible act and an irreversible one — and friction
+     * applied to everything stops being read. The code is spent only where
+     * nothing can undo the outcome.
+     */
+    public function test_moving_to_trash_needs_no_confirmation_code(): void
     {
         $user = User::factory()->create();
         $file = $this->fileIn($this->root($user), $user);
 
-        $this->actingAs($user)->post('/files/delete', [
+        $this->destroy($user, [['kind' => 'file', 'public_id' => $file->public_id]])
+            ->assertRedirect();
+
+        $this->assertSoftDeleted($file);
+    }
+
+    public function test_a_purge_without_a_confirmation_code_is_refused(): void
+    {
+        $user = User::factory()->create();
+        $file = $this->fileIn($this->root($user), $user);
+        $this->destroy($user, [['kind' => 'file', 'public_id' => $file->public_id]]);
+
+        $this->actingAs($user)->post('/files/purge', [
             'items' => [['kind' => 'file', 'public_id' => $file->public_id]],
         ])->assertSessionHasErrors('confirmation');
 
-        $this->assertNotSoftDeleted($file);
+        $this->assertSoftDeleted($file);
+        $this->assertNotNull(File::withTrashed()->find($file->id));
     }
 
     public function test_a_wrong_confirmation_code_is_refused(): void
     {
         $user = User::factory()->create();
         $file = $this->fileIn($this->root($user), $user);
+        $this->destroy($user, [['kind' => 'file', 'public_id' => $file->public_id]]);
 
         $issued = $this->code($user);
         $wrong = str_pad((string) ((((int) $issued) + 1) % 10000), 4, '0', STR_PAD_LEFT);
 
-        $this->destroy($user, [['kind' => 'file', 'public_id' => $file->public_id]], $wrong)
+        $this->purgeItems($user, [['kind' => 'file', 'public_id' => $file->public_id]], $wrong)
             ->assertSessionHasErrors('confirmation');
 
-        $this->assertNotSoftDeleted($file);
+        $this->assertNotNull(File::withTrashed()->find($file->id));
     }
 
     /**
@@ -123,30 +158,37 @@ class FileLifecycleTest extends TestCase
         $first = $this->fileIn($this->root($user), $user, 'one.pdf');
         $second = $this->fileIn($this->root($user), $user, 'two.pdf');
 
+        $this->destroy($user, [
+            ['kind' => 'file', 'public_id' => $first->public_id],
+            ['kind' => 'file', 'public_id' => $second->public_id],
+        ]);
+
         $code = $this->code($user);
 
-        $this->destroy($user, [['kind' => 'file', 'public_id' => $first->public_id]], $code)
+        $this->purgeItems($user, [['kind' => 'file', 'public_id' => $first->public_id]], $code)
             ->assertRedirect();
-        $this->destroy($user, [['kind' => 'file', 'public_id' => $second->public_id]], $code)
+        $this->purgeItems($user, [['kind' => 'file', 'public_id' => $second->public_id]], $code)
             ->assertSessionHasErrors('confirmation');
 
-        $this->assertSoftDeleted($first);
-        $this->assertNotSoftDeleted($second);
+        $this->assertNull(File::withTrashed()->find($first->id));
+        $this->assertNotNull(File::withTrashed()->find($second->id));
     }
 
-    /** A code issued for the trash does not satisfy a permanent deletion. */
-    public function test_a_delete_code_cannot_confirm_a_permanent_deletion(): void
+    /**
+     * A code is bound to the act it was issued for.
+     *
+     * There is one purpose today, so the binding cannot be exercised by asking
+     * for the wrong one — it is exercised by the endpoint refusing to mint a
+     * code for anything else. A code nothing will check is a credential handed
+     * out for nothing.
+     */
+    public function test_no_code_can_be_issued_for_anything_but_a_purge(): void
     {
         $user = User::factory()->create();
-        $file = $this->fileIn($this->root($user), $user);
-        $this->destroy($user, [['kind' => 'file', 'public_id' => $file->public_id]]);
 
-        $this->actingAs($user)->post('/files/purge', [
-            'items' => [['kind' => 'file', 'public_id' => $file->public_id]],
-            'confirmation' => $this->code($user, 'delete'),
-        ])->assertSessionHasErrors('confirmation');
-
-        $this->assertSoftDeleted($file);
+        $this->actingAs($user)
+            ->postJson('/files/confirm-code', ['purpose' => 'delete'])
+            ->assertStatus(422);
     }
 
     /** The dialog can state what a recursive delete would take with it. */
@@ -619,5 +661,103 @@ class FileLifecycleTest extends TestCase
             $this->actingAs($user)->getJson('/files/destinations')->json('root.public_id'),
         );
         $this->assertNotNull($mine);
+    }
+
+    // ------------------------------------------- a restore brings it all back
+
+    /**
+     * The bug this guards was real and silent.
+     *
+     * `delete()` soft-deletes a folder's whole subtree; `restore()` only ever
+     * revived the item and the trashed chain *above* it. So restoring a
+     * trashed folder returned an **empty** folder — its children stayed
+     * soft-deleted and, not being listed at the top level of the trash either,
+     * were reachable from My Files and from the Trash alike: present in the
+     * table, absent from every screen. `files/trash.js` told the person the
+     * opposite in as many words, and every restore test used a single file.
+     */
+    public function test_restoring_a_folder_brings_its_whole_subtree_back(): void
+    {
+        $user = User::factory()->create();
+        $top = $this->folder($user, $this->root($user), 'Case Files');
+        $middle = $this->folder($user, $top, '2026');
+        $deep = $this->folder($user, $middle, 'January');
+
+        $atTop = $this->fileIn($top, $user, 'index.pdf');
+        $atDepth = $this->fileIn($deep, $user, 'memo.pdf');
+
+        $this->destroy($user, [['kind' => 'folder', 'public_id' => $top->public_id]]);
+
+        $this->assertSoftDeleted($middle);
+        $this->assertSoftDeleted($deep);
+        $this->assertSoftDeleted($atDepth);
+
+        $this->actingAs($user)->post('/files/restore', [
+            'kind' => 'folder',
+            'public_id' => $top->public_id,
+        ])->assertRedirect();
+
+        foreach ([$top, $middle, $deep, $atTop, $atDepth] as $subject) {
+            $this->assertNotSoftDeleted($subject->fresh());
+        }
+
+        // And back where it was, not flattened into the root.
+        $this->assertSame($middle->id, $deep->fresh()->parent_id);
+        $this->assertSame($deep->id, $atDepth->fresh()->folder_id);
+    }
+
+    /**
+     * But only what *this* delete took.
+     *
+     * Somebody threw a file away on its own; later the folder holding it was
+     * deleted too. Restoring the folder must not quietly undo the first
+     * decision — nobody asked for that file back. This is why a delete stamps
+     * a batch rather than the restore sweeping up "everything trashed under
+     * here".
+     */
+    public function test_a_restore_leaves_items_trashed_by_an_earlier_delete(): void
+    {
+        $user = User::factory()->create();
+        $folder = $this->folder($user, $this->root($user), 'Reports');
+        $wanted = $this->fileIn($folder, $user, 'keep.pdf');
+        $discarded = $this->fileIn($folder, $user, 'discard.pdf');
+
+        // Thrown away on its own first.
+        $this->destroy($user, [['kind' => 'file', 'public_id' => $discarded->public_id]]);
+
+        // Then the whole folder.
+        $this->destroy($user, [['kind' => 'folder', 'public_id' => $folder->public_id]]);
+
+        $this->actingAs($user)->post('/files/restore', [
+            'kind' => 'folder',
+            'public_id' => $folder->public_id,
+        ])->assertRedirect();
+
+        $this->assertNotSoftDeleted($folder->fresh());
+        $this->assertNotSoftDeleted($wanted->fresh());
+        // Not `fresh()`: the soft-delete scope hides it, so fresh() is null.
+        // And no message argument — assertSoftDeleted's second parameter is
+        // `$data`, not a description, so a string there silently becomes a
+        // column filter that matches nothing.
+        $this->assertSoftDeleted($discarded);
+        $this->assertNotNull(File::withTrashed()->find($discarded->id));
+    }
+
+    /** Each delete gets its own stamp, so two deletes never restore each other. */
+    public function test_each_delete_carries_its_own_batch(): void
+    {
+        $user = User::factory()->create();
+        $first = $this->folder($user, $this->root($user), 'One');
+        $second = $this->folder($user, $this->root($user), 'Two');
+
+        $this->destroy($user, [['kind' => 'folder', 'public_id' => $first->public_id]]);
+        $this->destroy($user, [['kind' => 'folder', 'public_id' => $second->public_id]]);
+
+        $batches = Folder::withTrashed()
+            ->whereIn('id', [$first->id, $second->id])
+            ->pluck('deleted_batch');
+
+        $this->assertCount(2, $batches->unique(), 'Two deletes must not share one batch.');
+        $this->assertNotContains(null, $batches->all());
     }
 }

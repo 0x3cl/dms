@@ -193,6 +193,54 @@ html[data-fetching] [data-skeleton]::after {
 }
 
 /*
+ * One line, ellipsis, and the whole of it on hover.
+ *
+ * For a heading that is somebody's free text — a document title — where
+ * neither available answer is good on its own. Wrapping lets one long title
+ * take four lines and push the page's own controls out of the way, which is
+ * the layout reading as broken; truncating alone hides text with no way to
+ * read it, on the one screen whose subject that text is.
+ *
+ * So it truncates until the pointer is on it and then becomes scrollable:
+ * the ellipsis is replaced by a real overflow the reader drags or wheels
+ * through. The `title` attribute is still set by the markup, because a
+ * tooltip is what a keyboard or touch reader gets, and neither hovers.
+ *
+ * `scrollbar-gutter: stable` is the load-bearing line. Without it the bar
+ * appears only while hovering, which adds its height to the element and
+ * nudges everything below down a few pixels — the heading flinching away
+ * from the pointer. The gutter is reserved in both states instead, so
+ * nothing moves.
+ */
+.hover-scroll {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    scrollbar-width: thin;
+    scrollbar-gutter: stable;
+    scrollbar-color: var(--color-slate-300) transparent;
+}
+
+.hover-scroll:hover,
+.hover-scroll:focus-visible {
+    overflow-x: auto;
+    text-overflow: clip;
+}
+
+.hover-scroll::-webkit-scrollbar {
+    height: 0.25rem;
+}
+
+.hover-scroll::-webkit-scrollbar-thumb {
+    border-radius: 9999px;
+    background: var(--color-slate-300);
+}
+
+.hover-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+/*
  * ---------------------------------------------------------------------------
  * Dark theme
  * ---------------------------------------------------------------------------
@@ -259,7 +307,25 @@ html.dark {
     --color-rose-800: #fecdd3;
     --color-rose-900: #ffe4e6;
 
+    /*
+     * green/orange/red are the three access levels (VisibilityBadge, and
+     * FileVisibility::tone()), so each needs its 100 surface and its 700 ink
+     * remapped here or a level badge keeps a light-mode fill on a dark card.
+     * orange already has its block below; green and red-100 are added here.
+     */
+    --color-green-50: #102c19;
+    --color-green-100: #163a22;
+    --color-green-200: #1d4c2d;
+    --color-green-700: #86efac;
+    --color-green-800: #bbf7d0;
+    --color-green-900: #dcfce7;
+
+    --color-red-50: #2f1515;
+    --color-red-100: #3d1b1b;
+    --color-red-200: #512424;
     --color-red-700: #fca5a5;
+    --color-red-800: #fecaca;
+    --color-red-900: #fee2e2;
 
     --color-sky-50: #122b3c;
     --color-sky-100: #17374c;
@@ -873,4 +939,85 @@ html.dark .text-violet-500 {
     .doctrack-tour-mascot.is-visible img {
         animation: none;
     }
+}
+
+/*
+ * Word and Excel rendered in the browser.
+ *
+ * `docx-preview` emits its own inline styles from the document itself, so the
+ * page must not fight them — these rules only give the output a container and
+ * make a spreadsheet's generated table legible.
+ *
+ * Deliberately plain colours rather than theme tokens: this is a reproduction
+ * of a document that exists on paper, and recolouring it under the dark theme
+ * would misrepresent what the person is looking at. The surface stays white in
+ * both themes for the same reason a printed page does.
+ */
+.office-render .docx-wrapper {
+    background: transparent;
+    padding: 0;
+}
+
+.office-render .docx {
+    margin: 0 auto;
+    box-shadow: none;
+
+    /*
+     * Each `.docx` is one page of the document — but only where the document
+     * declares a page break, which is why this helps a real report and does
+     * nothing for one that declares none: a 30,000-paragraph document with no
+     * breaks renders as a single section, and a measured one with a thousand
+     * breaks renders as a thousand. Where there are sections, this skips
+     * layout, style and paint for every one off screen.
+     *
+     * `contain-intrinsic-size` is what keeps it honest: it is the placeholder
+     * height a skipped page stands in at, so the scrollbar and the scroll
+     * position stay stable instead of jumping as pages enter and leave.
+     * `auto` means "use the real height once it has been measured", and
+     * 1056px is a US Letter page at 96dpi — the common case, and only ever a
+     * first guess.
+     */
+    content-visibility: auto;
+    contain-intrinsic-size: auto 1056px;
+}
+
+.office-sheet + .office-sheet {
+    margin-top: 2rem;
+}
+
+.office-sheet h3 {
+    margin-bottom: 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #64748b;
+}
+
+.office-sheet table {
+    /*
+     * `max-content`, not `100%`. A spreadsheet is as wide as its columns,
+     * and forcing it to the container's width makes every column a
+     * negotiation the browser has to measure every cell to settle. The
+     * scroll container beside it is what handles the overflow.
+     */
+    width: max-content;
+    min-width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+    color: #0f172a;
+}
+
+.office-sheet td,
+.office-sheet th {
+    border: 1px solid #e2e8f0;
+    padding: 0.375rem 0.625rem;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.office-sheet tr:first-child td,
+.office-sheet th {
+    background: #f8fafc;
+    font-weight: 700;
 }

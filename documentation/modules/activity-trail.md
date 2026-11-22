@@ -71,6 +71,18 @@ A share records the grantee's **label** as well as its id, because `item_shares`
 
 Because the rows carry their own snapshots, the report needs **no eager loading at all** and the search reads one table rather than running a `whereHas` against `users` and another against `files` on every keystroke — and it keeps answering after either is deleted. Covered by `test_the_report_renders_after_its_actors_are_deleted`.
 
+## Versions
+
+Two actions: `ActivityAction::VersionReplaced` ("Replaced the file") and `VersionReverted` ("Restored an earlier version"). Neither is in `releases()` — no copy left the server — and both reach the report's filter automatically, because `values()` and `options()` derive from `cases()`.
+
+`activity_logs.subject_version` records which version of the subject a row was about, derived from the subject when it is not passed, so every existing caller stayed correct. A folder has no version and keeps null, as does every row written before the column existed.
+
+> **Trap, and a real bug avoided.** `recordOnce()`'s debounce key **includes the version**. Without it, previewing version 1 and then version 2 inside the five-minute window would record only the first — a forged history in the opposite direction from the one the debounce exists to prevent. Covered by `test_previewing_two_versions_inside_the_debounce_window_records_both`.
+
+> **No version filter on this report, deliberately.** `/activity-trails` is cross-subject, and "version 2" without a subject would match version 2 of every file in the agency. The version is rendered on the row; filtering by it belongs on a *document's* trail, where one subject is already named.
+
+Only a **tracked document's** replacement crosses into `document_logs`, as `DocumentAction::FileReplaced`, and it is written directly by `FileManager::replace()` rather than through `DOCUMENT_EQUIVALENTS` — which stays at two entries. See `documents.md` for the audience argument.
+
 ## Key files
 
 | File | Role |

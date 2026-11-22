@@ -41,6 +41,36 @@ class TrackingCodeService
     private const COUNTER_WIDTH = 4;
 
     /**
+     * The shape of a tracking code: `ABBR-YYYYMMDD-NNNN`.
+     *
+     * Here rather than in a controller or a Vue file because this is the one
+     * class that *composes* a code, and a reader of one has to agree with its
+     * writer. The abbreviation is a `document_types.code`, which is validated
+     * `alpha_dash` and `max:16`; the counter is zero-padded to
+     * `COUNTER_WIDTH`, and the upper bound is slack for a type that issues
+     * more than a day's padding allows.
+     *
+     * It is a *shape* check and never a claim that a document exists. The two
+     * answers are deliberately different — "that is not a tracking code" tells
+     * somebody to look at what they typed, while "no document carries that
+     * code" tells them to look at the label — and conflating them sends every
+     * mistyped code off to be hunted for in the register.
+     */
+    public const MASK = '/^[A-Za-z0-9_-]{1,16}-\d{8}-\d{3,8}$/';
+
+    /**
+     * Could this string be a tracking code at all?
+     *
+     * Asked before the database is, so a paste of a whole email or a QR code
+     * carrying a vCard is answered without a query — and answered honestly,
+     * rather than as a document that could not be found.
+     */
+    public static function looksLikeCode(string $value): bool
+    {
+        return preg_match(self::MASK, trim($value)) === 1;
+    }
+
+    /**
      * Issue the next code for a type and advance its series.
      */
     public function issue(DocumentType $type, ?CarbonInterface $on = null): string

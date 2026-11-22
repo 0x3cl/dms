@@ -19,7 +19,7 @@ import { accessBadge, readableSize, rowActions } from '../utils/file-rows';
 export default defineComponent({
     name: 'FileTable',
     components: { ActionMenu, Badge, FileIcon, Link },
-    emits: ['open', 'preview', 'act', 'sort'],
+    emits: ['open', 'preview', 'act', 'prefetch', 'sort'],
     props: {
         folders: { type: Array, default: () => [] },
         files: { type: Array, default: () => [] },
@@ -72,8 +72,17 @@ export default defineComponent({
                 </tr>
             </thead>
             <tbody>
+                <!-- A folder row carries the same select control as a file row.
+                     It had a blank cell, so a folder could not be part of a
+                     bulk Move, Copy or Delete — which FileManager has always
+                     accepted. -->
                 <tr v-for="folder in folders" :key="'folder-' + folder.public_id" class="border-b border-slate-100 hover:bg-sky-50/50">
-                    <td v-if="selectable" class="px-4 py-4"></td>
+                    <td v-if="selectable" class="px-4 py-4">
+                        <label class="inline-flex items-center">
+                            <span class="sr-only">Select {{ folder.name }}</span>
+                            <input type="checkbox" class="h-4 w-4 rounded border-slate-300 accent-[#07559e]" :checked="isSelected(folder.public_id)" @change="$emit('open', { item: folder, kind: 'folder', action: 'select' })" />
+                        </label>
+                    </td>
                     <td class="px-4 py-4">
                         <Link :href="folderHref(folder.public_id)" class="inline-flex items-center gap-3 font-bold text-slate-800 hover:text-[#07559e]">
                             <FileIcon folder size="sm" />{{ folder.name }}
@@ -96,14 +105,36 @@ export default defineComponent({
                 <tr v-for="(file, fileIndex) in files" :data-tour="fileIndex === 0 ? 'file-row' : null" :key="'file-' + file.public_id" class="border-b border-slate-100 hover:bg-sky-50/50">
                     <td v-if="selectable" class="px-4 py-4">
                         <label class="inline-flex items-center">
-                            <span class="sr-only">Select {{ file.name }}</span>
+                            <span class="sr-only">Select {{ file.display_name || file.name }}</span>
                             <input type="checkbox" class="h-4 w-4 rounded border-slate-300 accent-[#07559e]" :checked="isSelected(file.public_id)" @change="$emit('open', { item: file, kind: 'file', action: 'select' })" />
                         </label>
                     </td>
+                    <!--
+                        The icon is its own column, and the name and the
+                        tracking code share the one beside it.
+
+                        The code used to be a sibling of the whole button, so
+                        it began at the cell's left edge - under the icon,
+                        while the name it belongs to started three rems to the
+                        right. Two lines about one file, neither lining up with
+                        the other. Giving the icon a column of its own puts
+                        both lines on the same left edge and lets a long name
+                        truncate instead of pushing the row wide.
+                    -->
                     <td class="px-4 py-4">
-                        <button type="button" class="inline-flex items-center gap-3 text-left font-bold text-slate-800 hover:text-[#07559e] disabled:text-slate-800 disabled:hover:text-slate-800" :disabled="mode === 'trash'" @click="$emit('preview', file)">
-                            <FileIcon :mime-type="file.mime_type" size="sm" />{{ file.name }}
-                        </button>
+                        <div class="flex items-start gap-3">
+                            <FileIcon :mime-type="file.mime_type" size="sm" class="mt-0.5 shrink-0" />
+                            <div class="min-w-0">
+                                <button type="button" class="block max-w-full truncate text-left font-bold text-slate-800 hover:text-[#07559e] disabled:text-slate-800 disabled:hover:text-slate-800" :disabled="mode === 'trash'" @click="$emit('preview', file)" @mouseenter="$emit('prefetch', file)" @focus="$emit('prefetch', file)">
+                                    {{ file.display_name || file.name }}
+                                </button>
+                                <!-- A tracked file is a document; this is the way to
+                                     its trail, which it previously had none of. -->
+                                <Link v-if="file.tracked" :href="file.tracked.url" class="mt-1 inline-flex items-center gap-1.5 font-mono text-xs font-semibold text-[#07559e] hover:text-[#043d78]" :title="'Tracked as ' + file.tracked.code">
+                                    <i class="fa-solid fa-qrcode" aria-hidden="true"></i>{{ file.tracked.code }}
+                                </Link>
+                            </div>
+                        </div>
                     </td>
                     <td class="px-4 py-4">
                         <span v-if="mode === 'trash'" class="text-sm text-slate-600">{{ file.restores_to }}</span>

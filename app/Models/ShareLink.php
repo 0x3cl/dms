@@ -43,14 +43,31 @@ class ShareLink extends Model
         });
     }
 
-    public function getRouteKeyName(): string
-    {
-        return 'token';
-    }
+    /*
+     * There is deliberately **no `getRouteKeyName()` override here.**
+     *
+     * It used to return `token`, which read as sensible — the token is how a
+     * link is addressed in public — and silently broke the only two routes
+     * that bind this model. `/s/{token}` is not one of them: that route takes a
+     * plain string and resolves it through `SharingService::resolveLink()`,
+     * because a redemption has to re-check the link's state rather than merely
+     * find the row. The two that *are* bound are the revoke endpoints, which
+     * are given a link's **id** by the panel that lists them — so every revoke
+     * resolved nothing, answered 404, and left the link working while the page
+     * reported success. See `test_revoking_a_link_actually_revokes_it`.
+     */
 
+    /**
+     * The file or folder this grant is on — **including a trashed one**.
+     *
+     * Without `withTrashed()` a soft-deleted subject resolves to null, and
+     * every caller that asks "may this person share that?" then refuses, so
+     * access could not be taken away from an item sitting in the bin. A grant
+     * on a trashed item is still a live grant: the item can be restored.
+     */
     public function shareable(): MorphTo
     {
-        return $this->morphTo();
+        return $this->morphTo()->withTrashed();
     }
 
     public function createdBy(): BelongsTo

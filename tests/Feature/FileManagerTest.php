@@ -48,26 +48,71 @@ class FileManagerTest extends TestCase
     }
 
     /**
-     * Delete, through the confirmation the endpoint now requires.
+     * Delete, by whichever route.
      *
-     * The code is issued by the server into the session and spent on use, so a
-     * test has to ask for one the same way the dialog does — which is the point
-     * of it being server-side rather than a browser check.
+     * Moving to trash is reversible and carries no confirmation code. A purge
+     * is not, and carries one issued by the server into the session and spent
+     * on use — so a test has to ask for it the same way the dialog does, which
+     * is the point of it being server-side rather than a browser check.
      *
      * @param  list<array{kind: string, public_id: string}>  $items
      */
     private function deleteItems(User $actor, array $items, string $endpoint = '/files/delete')
     {
-        $purpose = $endpoint === '/files/purge' ? 'purge' : 'delete';
+        if ($endpoint !== '/files/purge') {
+            return $this->actingAs($actor)->post($endpoint, ['items' => $items]);
+        }
 
         $code = $this->actingAs($actor)
-            ->postJson('/files/confirm-code', ['purpose' => $purpose])
+            ->postJson('/files/confirm-code', ['purpose' => 'purge'])
             ->json('code');
 
         return $this->actingAs($actor)->post($endpoint, [
             'items' => $items,
             'confirmation' => $code,
         ]);
+    }
+
+    /**
+     * The Move/Copy picker creates folders too, and gets the new one back.
+     *
+     * It is the same endpoint the New folder dialog posts to. A redirect would
+     * close the dialog and lose the selection the person arrived with, so the
+     * picker asks for JSON — but a second create endpoint would be a second
+     * place the ability check and the naming rules have to be remembered.
+     */
+    public function test_a_folder_can_be_created_from_the_picker_and_comes_back_as_json(): void
+    {
+        $user = User::factory()->create();
+        $root = $this->root($user);
+
+        $payload = $this->actingAs($user)
+            ->postJson('/files/folders', ['parent' => $root->public_id, 'name' => 'Contracts'])
+            ->assertOk()
+            ->json();
+
+        $this->assertSame('Contracts', $payload['folder']['name']);
+        $this->assertSame($root->public_id, $payload['folder']['parent_public_id']);
+        $this->assertTrue($payload['folder']['is_mine']);
+
+        $this->assertDatabaseHas('folders', [
+            'public_id' => $payload['folder']['public_id'],
+            'name' => 'Contracts',
+            'parent_id' => $root->id,
+            'user_id' => $user->id,
+        ]);
+    }
+
+    /** A refusal comes back as a bag the dialog can render, not a redirect. */
+    public function test_a_rejected_picker_folder_name_answers_with_errors(): void
+    {
+        $user = User::factory()->create();
+        $root = $this->root($user);
+
+        $this->actingAs($user)
+            ->postJson('/files/folders', ['parent' => $root->public_id, 'name' => 'bad/name'])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('name');
     }
 
     // ------------------------------------------------------------------ the page

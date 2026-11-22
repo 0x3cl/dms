@@ -513,8 +513,9 @@ survive in a diff.
 | `/files` + `/files/shared` | `/files`, with shared items listed at the top of a person's own storage |
 
 Every absorbed route either moved into the page that took it over or stayed as a
-redirect. `/documents/all` redirects; `/scan` and `/documents/track` stay public,
-because a QR label has to resolve for whoever is holding the folder. `pages/documents/all.js`
+redirect. `/documents/all` redirects; `/scan` and `/documents/track` survived as
+routes — they have since moved behind `auth`, because a tracking code is printed
+on the folder and is not a credential; an outside reader gets a share link. `pages/documents/all.js`
 and `pages/files/shared.js` are deleted.
 
 ### What was removed outright
@@ -568,3 +569,86 @@ kinds), `FileManager::purge()` / folder-aware `copy()` / chain-aware `restore()`
 - **File versioning is still not implemented**, and `documentation/modules/files.md`
   records what the current shape supports so the next phase does not have to
   re-derive it.
+
+## QR labels became PNG with the seal (later change)
+
+The note above records why labels were SVG: `simple-qrcode` renders PNG through BaconQrCode's Imagick backend, which this environment lacks. That was accurate, and the conclusion drawn from it — "so labels are SVG and unbranded" — turned out to be a constraint of the *library* rather than of the environment.
+
+`endroid/qr-code` renders PNG through GD, which is present, and embeds a logo natively. Labels are now `{code}.png` carrying the DOST-PTRI seal, built only by `App\Services\Documents\QrLabelService`, and `simple-qrcode` has been removed. Rows created before the switch keep their `.svg` filenames and still work, because `downloadQr()` serves whatever the row points at — the same property that let the earlier `.png` rows survive this note's original change.
+
+## 2026-11-12/13 — Access requests, grouped types, realtime (append)
+
+Four changes landed after the 2026-11-11 consolidation. Each is described in full where the reasoning belongs — this is the record that they happened and what to read.
+
+- **Realtime over Laravel Reverb.** Both audit trails and the notification bell update without a reload. A trail broadcasts a **signal** (`App\Events\DocumentTrailUpdated`, `ActivityTrailUpdated`), never the row, and `routes/channels.php` is the entire gate because `/broadcasting/auth` carries no `permission:` middleware. It fails soft: no `VITE_REVERB_APP_KEY`, no connection, and every page still renders from its Inertia props. `documentation/modules/realtime.md`.
+- **Access requests.** A reader refused a private or confidential document can now ask the uploader. Granting writes one `document_recipients` row and nothing else, so `AccessResolver` did not change at all; there is deliberately no decide permission, because who may answer is a per-record question. `documentation/modules/access-requests.md`.
+- **Document types gained groups.** `document_type_groups` arranges the picker, the module opens on the groups rather than on a flat table of every type, and a group has its own create/edit/delete behind the *same* `document-types.*` grants. `group_id` is `nullOnDelete`, so an ungrouped type shows under **Other**, last. `documentation/modules/document-types.md`.
+- **The upload policy became one row and one list.** `allowed_extensions` + `allowed_mime_types` + `prohibited_extensions` were three administrator-edited lists that all had to agree, and a real `.xlsx` was refused because only one of them had been updated. `upload_settings.allowed_types` is now the single list, with the derived halves moved into `App\Support\FileTypes` in code. The merge migration **widens and never narrows**. `documentation/modules/upload-settings.md`.
+
+Two smaller corrections, recorded because each fixed a wrong statement rather than adding a feature:
+
+- **A restore now revives the whole delete, not just the chain above the item.** Restoring a trashed folder returned an *empty* folder — its children stayed soft-deleted and were unreachable from both My Files and the trash, while the dialog promised the opposite, and no test caught it because every restore test used a single file. Each delete stamps a uuid across `files.deleted_batch` / `folders.deleted_batch`, and a restore revives exactly that batch, so a child trashed separately earlier stays in the trash. `deleted_at` cannot express this — it is second-precision.
+- **Moving to trash no longer carries a confirmation code.** The reasoning that a code issued for a reversible act must not satisfy an irreversible one was right; putting the *same* friction on both was not. Identical dialogs taught people to type four digits as the way past a dialog, which is the muscle memory the code exists to interrupt. `PURPOSE_PURGE` is the only purpose that remains, and `/files/confirm-code` refuses to mint any other.
+
+Also: `php artisan brand:icons` generates the whole tab-icon set from `public/ptri.png` (GD, letterboxed, with a real multi-size `favicon.ico`), and `document_logs` now snapshots the actor's **face** — `actor_avatar_seed` and `actor_profile_image` — beside their name, so a trail never joins a live account to decorate itself.
+
+## 2026-11-15 — File version control (append)
+
+Replacing a file is recorded now, and nothing is thrown away. The first upload is version 1, a replacement is version 2, and both audit trails record which version an event concerned.
+
+**The `files` row is the current version**; only superseded versions move to the new `file_versions` table. The note in `documentation/modules/files.md` predicted the opposite shape — a `files` row per version — and has been rewritten rather than appended to, because two of its predictions did not survive contact:
+
+- the `(folder_id, name)` unique index **did not have to move**, since there is still one row per file;
+- `PurgeTrashedFiles::reasonToKeep()` needed **no** new clause, since a version cannot outlive its file. The clause that was needed is in `FileStorage::delete()`, which now unlinks every version's bytes — without it a purge drops the rows (they cascade) and leaves their bytes on disk, referenced by nothing.
+
+What this fixed, beyond adding the feature: `DocumentController::update()` had been creating a second `files` row per replacement and orphaning the first, with no transaction, no audit row in either trail and no thumbnail. `files:purge --orphans` existed to sweep up after it; it now has nothing new to sweep, and the orphans already on disk are **unattributable by construction** — the old code recorded nothing about which document each belonged to — so they are swept rather than adopted as version 1.
+
+Decisions worth keeping, each argued at length in `CLAUDE.md` and `files.md`:
+
+- **A replacement appears in the document's travel history** (`DocumentAction::FileReplaced`), which is a deliberate exception to the audience rule: for a tracked document the file *is* the document, and a reader holding version 1 must learn version 2 exists. Written directly by `FileManager::replace()`, never through `FileEventRecorder::DOCUMENT_EQUIVALENTS`, which stays at two entries.
+- **A share link reaches the current version only.** The wider behaviour was asked for first and reversed once the consequence was clear: it would have widened every token already in circulation on the day this shipped.
+- **Only a tracked document's uploader may replace its file**, even against a manage share — `FileAbility::Rename` is reachable through one, and the bytes a printed tracking code names must not be swappable by a share holder. No `FileAbility::Replace` was added.
+- **A revert copies forward** as a new version rather than moving the pointer back, so the history stays append-only.
+- **A new version may be a different format** (`report.doc` → `report.docx`); `files.name` is never rewritten, because a rename could collide and so *refuse* a replacement.
+- **Every version is kept indefinitely and nothing prunes one.** Storage grows with each replacement. Stated here because the absence of a sweeper is a choice, not a gap.
+
+Two bugs avoided by the design review rather than by testing afterwards: `recordOnce()`'s debounce key had to include the version (previewing v1 then v2 inside the window would otherwise record only the first), and `replace()` needed `lockForUpdate()` (two concurrent replacements would both have tried to become version 2).
+
+Also in this change, unrelated and found in passing: `tests/Unit` was missing from the repository, so `php artisan test` — which CI runs — exited with a configuration error on a fresh clone before a single test ran. A `.gitkeep` fixes it.
+
+## The public tracking page
+
+`/track` is public again, and it is a different thing from the surface that was
+closed. The closure stands: a tracking code is printed on the folder and is a
+short, sequential per-type daily series, so it is not a credential and
+`/documents/view/{code}` still requires an account.
+
+What was wrong was the answer a visitor got. Every scan by somebody without an
+account landed on a sign-in form — no use at all to the courier holding the
+folder, who is the whole reason a label is printed on it. `PublicTrackingController`
+answers instead, and asks `AccessResolver` rather than deciding anything: a
+public document is described and previewed (a look, not a copy —
+`FilePreview` reports `can_download` false for a signed-out reader), a private
+or confidential one answers with its classification and nothing else, and a
+signed-in reader the resolver grants `view` is redirected to `documents.view`.
+
+`/scan` left the `auth` group and forwards a guest to `/track?method=scan`.
+`TrackDocumentCard` gained `target` and `initial-method` so the same three-method
+chooser serves both doors. `tests/Feature/PublicTrackingTest.php` holds the
+contract, including the two absence assertions that matter: a restricted
+document's title is not in the payload, and its bytes 404 for a visitor.
+
+### Validating a lookup
+
+`TrackingCodeService::MASK` and `looksLikeCode()` give a lookup a third answer.
+"That is not a tracking code" and "no document carries that code" send somebody
+to different places — to what they typed, or to the printed label — so both
+`PublicTrackingController` and `DocumentController::viewByCode()` ask the mask
+before the database and render `malformed` separately from `notFound`.
+
+The mask is deliberately not restated in JavaScript. `TrackDocumentCard`
+validates only what is about the input — empty, whitespace, over 64 characters,
+or a scan that produced a URL belonging to another site — and remounts
+`QrScanner` by `:key` after a bad camera scan, since the scanner stops its own
+stream before handing a result up. `QrScanner` now rejects a non-image or empty
+file itself rather than letting the library report it as an unreadable label.

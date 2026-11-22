@@ -5,10 +5,11 @@ import Card from '../../components/Card';
 import ConfirmActionModal from '../../components/ConfirmActionModal';
 import IndexControls from '../../components/IndexControls';
 import Pagination from '../../components/Pagination';
+import RowActions from '../../components/RowActions';
 
 export default defineComponent({
     name: 'SectionsIndex',
-    components: { AdminShell, Card, ConfirmActionModal, Head, IndexControls, Link, Pagination },
+    components: { AdminShell, Card, ConfirmActionModal, Head, IndexControls, Link, Pagination, RowActions },
     props: {
         sections: { type: Object, required: true },
         divisions: { type: Array, default: () => [] },
@@ -90,8 +91,13 @@ export default defineComponent({
                             <td class="px-4 py-4 text-slate-600">{{ section.division?.name ?? '—' }}</td>
                             <td class="px-4 py-4 text-slate-600">{{ section.users_count }}</td>
                             <td class="whitespace-nowrap px-4 py-4 text-right">
-                                <Link :href="'/sections/' + section.id + '/edit'" class="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-bold text-[#07559e] hover:bg-sky-100"><i class="fa-solid fa-pen" aria-hidden="true"></i>Edit</Link>
-                                <button type="button" class="ml-2 inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-bold text-rose-600 hover:bg-rose-50" @click="deleting = section"><i class="fa-solid fa-trash" aria-hidden="true"></i>Delete</button>
+                                <RowActions
+                                    :label="'Actions for ' + section.name"
+                                    :actions="[
+                                        { key: 'edit', label: 'Edit', icon: 'fa-solid fa-pen', tone: 'primary', href: '/sections/' + section.id + '/edit' },
+                                        { key: 'delete', label: 'Delete', icon: 'fa-solid fa-trash', tone: 'danger' },
+                                    ]"
+                                    @select="deleting = section" />
                             </td>
                         </tr>
                         <tr v-if="sections.data.length === 0">

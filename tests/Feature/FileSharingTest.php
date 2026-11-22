@@ -11,8 +11,10 @@ use App\Models\File;
 use App\Models\Folder;
 use App\Models\ItemShare;
 use App\Models\Section;
+use App\Models\ShareLink;
 use App\Models\User;
 use App\Services\Access\AccessResolver;
+use App\Services\Files\FileManager;
 use App\Services\Files\FileStorage;
 use App\Services\Files\FolderService;
 use App\Services\Files\SharingService;
@@ -349,6 +351,131 @@ class FileSharingTest extends TestCase
     }
 
     /**
+     * Revoking through the endpoint the panel actually calls.
+     *
+     * `SharingService::revokeLink()` was covered and worked; the route in front
+     * of it did not. `ShareLink::getRouteKeyName()` returned `token`, so the
+     * bound `{link}` parameter was matched against the token column while the
+     * share drawer — and the document page — pass a link's **id**. Every revoke
+     * resolved nothing, answered 404, and left the link working while the page
+     * reported success. Covering the service alone could never have caught it,
+     * which is why this test goes through HTTP.
+     */
+    public function test_revoking_a_link_actually_revokes_it(): void
+    {
+        $owner = User::factory()->superadmin()->create();
+        $file = $this->fileIn($this->folders->rootFor($owner), $owner);
+        $link = $this->sharing->createLink($file, ShareAbility::View, $owner);
+
+        $this->actingAs($owner)
+            ->delete("/files/share-links/{$link->id}")
+            ->assertSessionHasNoErrors();
+
+        $this->assertNotNull($link->fresh()->revoked_at, 'The link must actually be revoked.');
+        $this->assertFalse($link->fresh()->isUsable());
+        $this->get("/s/{$link->token}")->assertNotFound();
+    }
+
+    /**
+     * An item has one live link, and its terms are edited rather than
+     * superseded.
+     *
+     * Several links to one thing is several credentials with separate
+     * expiries and caps, and no screen can say which of them the message
+     * somebody sent last week carried — so revoking the wrong one is the
+     * normal outcome. The rule is refused in SharingService rather than in
+     * the two controllers that mint links, because a rule stated twice is a
+     * rule that holds in one place.
+     */
+    public function test_an_item_has_one_live_link(): void
+    {
+        $owner = User::factory()->superadmin()->create();
+        $file = $this->fileIn($this->folders->rootFor($owner), $owner);
+        $link = $this->sharing->createLink($file, ShareAbility::View, $owner);
+
+        $this->actingAs($owner)->post('/files/share-links', [
+            'kind' => 'file',
+            'public_id' => $file->public_id,
+            'ability' => 'download',
+        ])->assertSessionHas('error');
+
+        $this->assertSame(1, ShareLink::query()->whereNull('revoked_at')->count());
+
+        // Revoking frees the slot: one *live* link, not one ever.
+        $this->sharing->revokeLink($link, $owner);
+
+        $this->actingAs($owner)->post('/files/share-links', [
+            'kind' => 'file',
+            'public_id' => $file->public_id,
+            'ability' => 'download',
+        ])->assertSessionHasNoErrors();
+
+        $this->assertSame(1, ShareLink::query()->whereNull('revoked_at')->count());
+    }
+
+    /**
+     * Editing a link keeps its URL working.
+     *
+     * That is the whole reason editing exists: revoke-and-recreate silently
+     * breaks every message the old URL was pasted into, so somebody narrowing
+     * a link from download to view would cut off the people they were trying
+     * to narrow it for.
+     */
+    public function test_a_links_terms_can_be_changed_without_changing_its_url(): void
+    {
+        $owner = User::factory()->superadmin()->create();
+        $file = $this->fileIn($this->folders->rootFor($owner), $owner);
+        $link = $this->sharing->createLink($file, ShareAbility::Download, $owner);
+        $token = $link->token;
+
+        $this->actingAs($owner)
+            ->patch("/files/share-links/{$link->id}", ['ability' => 'view', 'max_views' => 3])
+            ->assertSessionHasNoErrors();
+
+        $link->refresh();
+
+        $this->assertSame($token, $link->token);
+        $this->assertSame(ShareAbility::View, $link->ability);
+        $this->assertSame(3, $link->max_views);
+
+        // Narrowed, and the narrowing is real.
+        $this->assertTrue($this->access->allows(null, $file->fresh(), FileAbility::View, $link));
+        $this->assertFalse($this->access->allows(null, $file->fresh(), FileAbility::Download, $link));
+    }
+
+    /** A stranger cannot edit somebody else's link. */
+    public function test_editing_a_link_needs_the_share_ability(): void
+    {
+        $owner = User::factory()->superadmin()->create();
+        $file = $this->fileIn($this->folders->rootFor($owner), $owner);
+        $link = $this->sharing->createLink($file, ShareAbility::View, $owner);
+
+        $this->actingAs(User::factory()->superadmin()->create())
+            ->patch("/files/share-links/{$link->id}", ['ability' => 'download'])
+            ->assertSessionHasErrors('item');
+
+        $this->assertSame(ShareAbility::View, $link->fresh()->ability);
+    }
+
+    /** The same for an individual share, which is bound the same way. */
+    public function test_revoking_a_share_through_the_endpoint_takes_effect(): void
+    {
+        $owner = User::factory()->superadmin()->create();
+        $friend = User::factory()->create();
+        $file = $this->fileIn($this->folders->rootFor($owner), $owner);
+
+        $share = $this->sharing->share($file, GranteeType::User, $friend->id, ShareAbility::View, $owner);
+
+        $this->assertTrue($this->can($friend, $file, FileAbility::View));
+
+        $this->actingAs($owner)
+            ->delete("/files/shares/{$share->id}")
+            ->assertSessionHasNoErrors();
+
+        $this->assertFalse($this->can($friend, $file, FileAbility::View));
+    }
+
+    /**
      * A link authorizes only the item it points at. Otherwise one legitimate
      * link would authorize a request for any other file.
      */
@@ -472,5 +599,91 @@ class FileSharingTest extends TestCase
         $this->assertFalse($this->can($plain, $file, FileAbility::Delete));
         $this->assertFalse($this->can($plain, $file, FileAbility::Rename));
         $this->assertNotNull($auditor);
+    }
+
+    // ------------------------------------------------------ revoking, fixed
+
+    /**
+     * A revoked grant must not come back wearing a live Revoke button.
+     *
+     * The panel used to list every `item_shares` row, so a withdrawn grant sat
+     * there with a "No longer active" badge *and* a working button — pressing
+     * it re-revoked, bumped `revoked_at` and wrote a second audit row about
+     * something that had already happened. Links were filtered; shares were
+     * not, so one panel behaved two ways.
+     */
+    public function test_a_revoked_grant_leaves_the_share_panel(): void
+    {
+        $owner = User::factory()->create();
+        $grantee = User::factory()->create();
+        $folder = app(FolderService::class)->create($owner, app(FolderService::class)->rootFor($owner), 'Shared');
+
+        $share = app(SharingService::class)->share($folder, GranteeType::User, $grantee->id, ShareAbility::Download, $owner);
+
+        $before = $this->actingAs($owner)
+            ->getJson('/files/share-state?kind=folder&public_id='.$folder->public_id)
+            ->assertOk()
+            ->json('shares');
+        $this->assertCount(1, $before);
+
+        $this->actingAs($owner)->delete("/files/shares/{$share->id}")->assertRedirect();
+
+        $after = $this->actingAs($owner)
+            ->getJson('/files/share-state?kind=folder&public_id='.$folder->public_id)
+            ->assertOk()
+            ->json('shares');
+
+        $this->assertCount(0, $after, 'A revoked grant must not be offered for revoking again.');
+
+        // Marked, never deleted: who was given what is still on record.
+        $this->assertDatabaseHas('item_shares', ['id' => $share->id]);
+        $this->assertNotNull($share->fresh()->revoked_at);
+    }
+
+    /**
+     * Access can be taken away from something in the bin.
+     *
+     * `shareable()` resolved through a plain `morphTo()`, which has no
+     * soft-delete scope, so a trashed subject arrived as null and every revoke
+     * was refused with "You cannot share that." — precisely when somebody most
+     * wants to withdraw access, having just thrown the thing away. The item
+     * can be restored, so the grant on it is still live.
+     */
+    public function test_a_grant_on_a_trashed_item_can_still_be_revoked(): void
+    {
+        $owner = User::factory()->create();
+        $grantee = User::factory()->create();
+        $folders = app(FolderService::class);
+        $folder = $folders->create($owner, $folders->rootFor($owner), 'Case');
+
+        $share = app(SharingService::class)->share($folder, GranteeType::User, $grantee->id, ShareAbility::Download, $owner);
+
+        app(FileManager::class)->delete($owner, $folder);
+
+        $this->actingAs($owner)
+            ->delete("/files/shares/{$share->id}")
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $this->assertNotNull($share->fresh()->revoked_at);
+    }
+
+    /** And a link on a trashed item, for the same reason. */
+    public function test_a_link_on_a_trashed_item_can_still_be_revoked(): void
+    {
+        $owner = User::factory()->create();
+        $folders = app(FolderService::class);
+        $folder = $folders->create($owner, $folders->rootFor($owner), 'Case');
+
+        $link = app(SharingService::class)->createLink($folder, ShareAbility::View, $owner);
+
+        app(FileManager::class)->delete($owner, $folder);
+
+        $this->actingAs($owner)
+            ->delete("/files/share-links/{$link->id}")
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $this->assertNotNull($link->fresh()->revoked_at);
     }
 }

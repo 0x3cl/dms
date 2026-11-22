@@ -6,12 +6,12 @@ use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 
 /**
- * The four-digit code a destructive file operation has to be confirmed with.
+ * The four-digit code a **permanent** deletion has to be confirmed with.
  *
  * A typed code is a speed bump, not an authorization: whoever asks for one is
  * already allowed to delete the thing. What it defends against is the muscle
  * memory that clicks the second button of a dialog without reading the first
- * line — which, on a recursive folder delete, is the difference between losing
+ * line — which, on a recursive folder purge, is the difference between losing
  * one file and losing a year of them.
  *
  * It is **issued and verified by the server**, not generated in the browser.
@@ -21,14 +21,21 @@ use Illuminate\Validation\ValidationException;
  * lives in the session, is spent on use, and expires, so a confirmation cannot
  * be harvested once and reused.
  *
- * Two purposes rather than one, because they are two different acts: moving
- * something to the trash is reversible and permanent deletion is not, and a
- * code issued for the first must not satisfy the second.
+ * **Moving to trash no longer carries one, and that is the point rather than a
+ * relaxation.** There were two purposes, on the reasoning that a reversible act
+ * and an irreversible one must not share a code. True — but it put the same
+ * friction on both, and friction applied to everything is friction that stops
+ * being read. People learned to type the digits to get past the dialog, which
+ * is the habit the code was introduced to interrupt. It is spent only where
+ * nothing can undo the outcome.
+ *
+ * `$purpose` therefore has one value today and is still a parameter, because it
+ * is what binds a code to the act it was issued for. Collapsing it into an
+ * unlabelled code would let one issued for some future confirmation satisfy a
+ * purge.
  */
 class DeletionConfirmation
 {
-    public const PURPOSE_DELETE = 'delete';
-
     public const PURPOSE_PURGE = 'purge';
 
     /** How long an issued code stays good. */

@@ -2,7 +2,6 @@
 
 namespace App\Services\Access;
 
-use App\Enums\DocumentVisibility;
 use App\Enums\FileAbility;
 use App\Enums\FileVisibility;
 use App\Models\Document;
@@ -60,9 +59,21 @@ class AccessResolver
     public function grant(?User $user, File|Folder|Document $subject, ?ShareLink $link = null): AccessGrant
     {
         if ($link !== null) {
-            return $this->fromLink($link, $subject);
+            return $this->fromLink($link, $subject, $user);
         }
 
+        return $this->withoutLink($user, $subject);
+    }
+
+    /**
+     * The chain with no link in it — clauses 2 to 8.
+     *
+     * Factored out because a `restricted` link resolves to exactly this: it
+     * names the subject and grants nothing, so whoever follows it gets the
+     * access they would have had by typing the tracking code.
+     */
+    private function withoutLink(?User $user, File|Folder|Document $subject): AccessGrant
+    {
         return match (true) {
             $subject instanceof Document => $this->forDocument($user, $subject),
             $subject instanceof File => $this->forFile($user, $subject),
@@ -83,22 +94,36 @@ class AccessResolver
      * without that, a link for one file would authorize a request for any
      * other, which is the whole value of the token.
      */
-    private function fromLink(ShareLink $link, File|Folder|Document $subject): AccessGrant
+    private function fromLink(ShareLink $link, File|Folder|Document $subject, ?User $user = null): AccessGrant
     {
-        if ($subject instanceof Document) {
-            return AccessGrant::denied();
-        }
-
         if (! $link->isUsable()) {
             return AccessGrant::denied();
         }
 
-        if ($link->shareable_type !== $subject::class || (int) $link->shareable_id !== (int) $subject->getKey()) {
+        if (! $this->linkCovers($link, $subject)) {
             return AccessGrant::denied();
         }
 
-        if (! $this->effectiveVisibility($subject)->linkable()) {
+        if (! $this->linkableNow($subject)) {
             return AccessGrant::denied();
+        }
+
+        /*
+         * A `restricted` link is an address, not a key.
+         *
+         * It resolves to the holder's own access, which is the whole meaning
+         * of the term: following it is the same as typing the tracking code,
+         * so the uploader and the tagged people reach the document with
+         * everything their own grant allows — including download, which the
+         * link itself never conferred — and anybody else reaches nothing.
+         *
+         * The three refusals above still ran, deliberately. A revoked,
+         * expired, spent or reclassified link stops resolving whatever its
+         * term is, so "the link no longer works" means one thing rather than
+         * two.
+         */
+        if (! $link->ability->isBearer()) {
+            return $this->withoutLink($user, $subject);
         }
 
         /*
@@ -118,6 +143,63 @@ class AccessResolver
     }
 
     /**
+     * Does this link actually point at the thing being asked about?
+     *
+     * Without this, a link for one file would authorize a request for any
+     * other, which is the whole value of the token.
+     *
+     * The one indirection is a document's own bytes. A document's link is
+     * minted against the **document**, because that is the thing somebody
+     * decided to share and the thing the trail is written about — but the
+     * bytes live in a `File` row, so a link on the document covers that file
+     * too. It covers nothing else: the file must be *this* document's.
+     */
+    private function linkCovers(ShareLink $link, File|Folder|Document $subject): bool
+    {
+        if ($link->shareable_type === $subject::class && (int) $link->shareable_id === (int) $subject->getKey()) {
+            return true;
+        }
+
+        /*
+         * `files` has no `document_id` column — the link between the two is
+         * `documents.file_id`, pointing the other way. This read the absent
+         * attribute, which Eloquent answers with null, so the whole branch was
+         * dead and a document's share link could not authorize that document's
+         * bytes: the landing page resolved (the subject is the Document there,
+         * so the first branch matched) and the download 404'd.
+         */
+        return $subject instanceof File
+            && $link->shareable_type === Document::class
+            && $subject->document !== null
+            && (int) $link->shareable_id === (int) $subject->document->id;
+    }
+
+    /**
+     * May this subject be reached by a link *at this moment*?
+     *
+     * Asked on every redemption rather than only at creation, because an item
+     * can be reclassified as confidential after a link has been handed out. The
+     * link has to stop working then, not at the next time somebody thinks to
+     * revoke it.
+     *
+     * A file carrying a tracking code is answered by its **document's**
+     * classification, not its own — the same rule as everywhere else: the
+     * obfuscated file URL is not a looser second door to a tracked document.
+     */
+    private function linkableNow(File|Folder|Document $subject): bool
+    {
+        if ($subject instanceof Document) {
+            return $subject->visibility->linkable();
+        }
+
+        if ($subject instanceof File && $subject->document) {
+            return $subject->document->visibility->linkable();
+        }
+
+        return $this->effectiveVisibility($subject)->linkable();
+    }
+
+    /**
      * The tracked-document rule, unchanged from the one it replaces.
      *
      * Reproduced clause for clause and in the same order, because
@@ -130,6 +212,16 @@ class AccessResolver
      * Reading and writing are separate questions. A *public* document is
      * readable by everyone and still editable only by its uploader, which is
      * why ownership grants the full set and visibility grants only a read.
+     *
+     * **Confidential joins the recipient clause, not a clause of its own.**
+     * Private and confidential grant identical *reading* — the uploader and the
+     * tagged list — and differ only in whether a link may be minted, which is
+     * `linkableNow()`'s question and is asked on the link path. Writing a
+     * fourth clause here that repeated the third would be a second statement of
+     * one rule, which is exactly the duplication this resolver exists to end.
+     * The public clause asks `restrictedToNamedPeople()` rather than
+     * `=== Public`, so a level added later cannot join the public side by
+     * being forgotten.
      */
     private function forDocument(?User $user, Document $document): AccessGrant
     {
@@ -137,7 +229,7 @@ class AccessResolver
             return AccessGrant::of(FileAbility::all(), AccessSource::Uploader);
         }
 
-        if ($document->visibility === DocumentVisibility::Public) {
+        if (! $document->visibility->restrictedToNamedPeople()) {
             return AccessGrant::of(self::READER_ABILITIES, AccessSource::PublicItem);
         }
 

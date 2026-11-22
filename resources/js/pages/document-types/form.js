@@ -22,6 +22,10 @@ export default defineComponent({
     components: { AdminShell, Button, Card, ConfirmActionModal, Head, Link, ToggleSwitch },
     props: {
         type: { type: Object, default: null },
+        /** Existing headings. The picker also accepts a new one by name. */
+        groups: { type: Array, default: () => [] },
+        /** The group this form was opened from, if it was opened from one. */
+        presetGroup: { type: Number, default: null },
     },
     setup(props) {
         const isEditing = computed(() => Boolean(props.type));
@@ -33,6 +37,12 @@ export default defineComponent({
             description: props.type?.description ?? '',
             is_active: props.type?.is_active ?? true,
             position: props.type?.position ?? 0,
+            /*
+             * The heading this type sits under in the picker. Optional: an
+             * ungrouped type shows under "Other" rather than disappearing,
+             * which is also what a deleted group leaves behind.
+             */
+            group_id: props.type?.group_id ?? props.presetGroup ?? '',
         });
 
         const submitForm = (options) => {
@@ -75,6 +85,7 @@ export default defineComponent({
                         <span class="required-label text-sm font-semibold text-slate-700">Abbreviation</span>
                         <input
                             v-model="form.code"
+                            :required="!codeLocked"
                             :disabled="codeLocked"
                             class="field font-mono uppercase disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
                             :class="{ 'border-rose-500': form.errors.code }"
@@ -88,7 +99,7 @@ export default defineComponent({
 
                     <label>
                         <span class="required-label text-sm font-semibold text-slate-700">Name</span>
-                        <input v-model="form.name" class="field" :class="{ 'border-rose-500': form.errors.name }" placeholder="Memorandum" />
+                        <input v-model="form.name" required class="field" :class="{ 'border-rose-500': form.errors.name }" placeholder="Memorandum" />
                         <p v-if="form.errors.name" class="error">{{ form.errors.name }}</p>
                         <p v-else class="mt-1 text-xs text-slate-500">What people choose from on the upload form.</p>
                     </label>
@@ -108,8 +119,30 @@ export default defineComponent({
 
                 <div class="grid gap-5 md:grid-cols-2">
                     <label>
+                        <span class="text-sm font-semibold text-slate-700">Group</span>
+                        <select v-model="form.group_id" class="field" :class="{ 'border-rose-500': form.errors.group_id }">
+                            <option value="">Other (ungrouped)</option>
+                            <option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option>
+                        </select>
+                        <p v-if="form.errors.group_id" class="error">{{ form.errors.group_id }}</p>
+                        <p v-else class="mt-1 text-xs text-slate-500">The heading this type appears under when somebody picks a type.</p>
+                    </label>
+
+                    <!-- Groups have their own create, edit and delete on the
+                         Document Types screen. A name typed in here would be
+                         a second way to make one that could then never be
+                         renamed or removed from the same place. -->
+                    <div class="flex items-end">
+                        <Link href="/document-type-groups/create" class="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-50">
+                            <i class="fa-solid fa-plus" aria-hidden="true"></i>New group
+                        </Link>
+                    </div>
+                </div>
+
+                <div class="grid gap-5 md:grid-cols-2">
+                    <label>
                         <span class="required-label text-sm font-semibold text-slate-700">Order on the form</span>
-                        <input v-model.number="form.position" type="number" min="0" class="field" :class="{ 'border-rose-500': form.errors.position }" />
+                        <input v-model.number="form.position" type="number" min="0" required class="field" :class="{ 'border-rose-500': form.errors.position }" />
                         <p v-if="form.errors.position" class="error">{{ form.errors.position }}</p>
                         <p v-else class="mt-1 text-xs text-slate-500">Lower comes first, so the dropdown can follow office convention rather than the alphabet.</p>
                     </label>
@@ -131,9 +164,17 @@ export default defineComponent({
             </form>
         </Card>
 
+        <!-- confirm.open and confirm.processing, never the object itself: a
+             reactive object is permanently truthy, so binding open to
+             confirm renders this dialog on page load and cancel() cannot
+             shut it — what it sets is not what the template reads. The
+             processing flag is the composable's too, because that is what
+             keeps the dialog open for the length of the request. See
+             useConfirmSubmit. (No backticks in here: this is inside a
+             template literal, and one would end it.) -->
         <ConfirmActionModal
-            :open="confirm"
-            :processing="form.processing"
+            :open="confirm.open"
+            :processing="confirm.processing"
             :title="isEditing ? 'Save this type?' : 'Create this type?'"
             :message="isEditing
                 ? 'Renaming a type does not change what documents already filed under it are labelled — each one keeps the name it was filed as.'

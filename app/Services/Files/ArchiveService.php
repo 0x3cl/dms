@@ -74,7 +74,7 @@ class ArchiveService
             throw ValidationException::withMessages(['items' => 'Choose at least one file to download.']);
         }
 
-        $setting = $this->policy->for('files');
+        $setting = $this->policy->policy();
         $scratch = $this->scratchPath('zip');
         $zip = new ZipArchive;
 
@@ -156,7 +156,7 @@ class ArchiveService
         $this->assert($actor, $archive, FileAbility::Download, 'You cannot extract that.');
         $this->assert($actor, $target, FileAbility::Rename, 'You cannot extract into that folder.');
 
-        $setting = $this->policy->for('files');
+        $setting = $this->policy->policy();
 
         if ($setting->max_archive_entries <= 0) {
             throw ValidationException::withMessages(['item' => 'Extracting archives is not permitted.']);
@@ -217,6 +217,10 @@ class ArchiveService
                         'storage_path' => '',
                         'visibility' => $target->visibility?->value ?? 'private',
                         'source' => 'extract',
+                        // Stated for the reason FileStorage::store() states it:
+                        // a row must carry its version in memory, not only in
+                        // the column default.
+                        'version' => 1,
                     ]);
 
                     // The path is ours, built from the row's own public id. The

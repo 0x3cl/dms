@@ -24,10 +24,15 @@ class DatabaseSeeder extends Seeder
      * password "password") and holds SUPERADMIN, because somebody has to be
      * able to create the second account's role.
      *
-     * `StaffSeeder` is deliberately **not** called here. Ten colleagues are
-     * what makes sharing, recipients and per-record access testable, and they
-     * are also ten accounts that can sign in — which has no business appearing
-     * on a production install because somebody ran `db:seed`. It is opt-in:
+     * `StaffSeeder` **is** called here, and the docblock used to claim the
+     * opposite while the call sat four lines below it. Ten colleagues are what
+     * makes sharing, recipients and per-record access testable, which is why
+     * it runs by default while this system is still being demonstrated.
+     *
+     * The cost is real and worth stating rather than hiding: those are ten
+     * accounts that can sign in, with one shared password, so `db:seed` must
+     * not be run against a deployment carrying real people. When this install
+     * goes live, drop the call and seed them opt-in instead:
      *
      *     php artisan db:seed --class=StaffSeeder
      */

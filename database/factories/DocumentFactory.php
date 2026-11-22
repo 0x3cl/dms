@@ -32,7 +32,7 @@ class DocumentFactory extends Factory
             'type' => $type->name,
             'file_path' => 'documents/'.fake()->uuid().'.pdf',
             'file_name' => fake()->slug(2).'.pdf',
-            'qr_code_path' => "{$code}.svg",
+            'qr_code_path' => "{$code}.png",
             'user_id' => User::factory(),
             'uploader_name' => fn (array $attributes) => User::find($attributes['user_id'])?->name ?? fake()->name(),
             'visibility' => DocumentVisibility::Public,
@@ -56,7 +56,7 @@ class DocumentFactory extends Factory
                 'document_type_id' => $type->id,
                 'type' => $type->name,
                 'code' => $trackingCode,
-                'qr_code_path' => "{$trackingCode}.svg",
+                'qr_code_path' => "{$trackingCode}.png",
             ];
         });
     }

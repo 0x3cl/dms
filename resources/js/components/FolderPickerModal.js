@@ -17,6 +17,14 @@ import useCloseOnTutorial from '../composables/useCloseOnTutorial';
  * The item being moved is excluded along with everything inside it — a folder
  * cannot be moved into itself, and showing the option only to have the server
  * refuse it is a dialog that lies about what it can do.
+ *
+ * **A folder can be created from here.** "Put it in a new folder" is a thought
+ * people have while choosing a destination, and sending them away to make one
+ * first loses the selection they arrived with. It posts to the same
+ * `files.folders.store` endpoint the New folder dialog uses — asking for JSON,
+ * because a redirect would close this dialog — so the ability check and the
+ * naming rules have one implementation rather than two. The new folder is then
+ * entered, because somebody who just named a destination has chosen it.
  */
 export default defineComponent({
     name: 'FolderPickerModal',
@@ -115,6 +123,69 @@ export default defineComponent({
             selected.value = trail.value[trail.value.length - 1] ?? null;
         };
 
+        // ------------------------------------------------------- new folder
+        const creating = ref(false);
+        const newName = ref('');
+        const createError = ref('');
+        const saving = ref(false);
+
+        const csrf = () => document.querySelector('meta[name="csrf-token"]')?.content ?? '';
+
+        const startCreating = () => {
+            creating.value = true;
+            newName.value = '';
+            createError.value = '';
+        };
+
+        const createFolder = async () => {
+            const name = newName.value.trim();
+
+            if (name === '' || saving.value) return;
+
+            saving.value = true;
+            createError.value = '';
+
+            try {
+                const response = await fetch('/files/folders', {
+                    method: 'POST',
+                    headers: {
+                        Accept: 'application/json',
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': csrf(),
+                    },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({
+                        // The folder currently being looked at, or the storage
+                        // root when the picker is at the top.
+                        parent: current.value?.public_id ?? root.value?.public_id,
+                        name,
+                    }),
+                });
+
+                const payload = await response.json().catch(() => ({}));
+
+                if (!response.ok) {
+                    // 422 carries Laravel's bag; anything else is unexplained.
+                    createError.value = payload?.errors?.name?.[0]
+                        ?? payload?.message
+                        ?? 'That folder could not be created.';
+
+                    return;
+                }
+
+                folders.value = [...folders.value, payload.folder];
+                creating.value = false;
+                newName.value = '';
+
+                // Entered, not merely listed: naming a destination is choosing it.
+                enter(payload.folder);
+            } catch {
+                createError.value = 'That folder could not be created.';
+            } finally {
+                saving.value = false;
+            }
+        };
+
         const target = computed(() => selected.value?.public_id ?? root.value?.public_id ?? null);
         const targetLabel = computed(() => selected.value?.name ?? root.value?.name ?? 'My Files');
 
@@ -129,7 +200,8 @@ export default defineComponent({
         });
 
         return {
-            children, confirmLabel, current, enter, failed, loading, root, selected,
+            children, confirmLabel, createError, createFolder, creating, current,
+            enter, failed, loading, newName, root, saving, selected, startCreating,
             summary, target, targetLabel, title, trail, up,
         };
     },
@@ -161,7 +233,7 @@ export default defineComponent({
             <div class="mt-3 max-h-72 overflow-y-auto rounded-xl border border-slate-200">
                 <p v-if="loading" class="px-4 py-8 text-center text-sm text-slate-500">Loading folders…</p>
                 <p v-else-if="failed" class="px-4 py-8 text-center text-sm font-semibold text-rose-600">{{ failed }}</p>
-                <p v-else-if="children.length === 0" class="px-4 py-8 text-center text-sm text-slate-500">No subfolders here. Choosing this folder puts it straight in.</p>
+                <p v-else-if="children.length === 0" class="px-4 py-8 text-center text-sm text-slate-500">No subfolders here. Choosing this folder puts it straight in, or make a new one below.</p>
                 <button
                     v-for="folder in children"
                     :key="folder.public_id"
@@ -177,6 +249,44 @@ export default defineComponent({
                     </span>
                     <i class="fa-solid fa-chevron-right text-xs text-slate-400" aria-hidden="true"></i>
                 </button>
+            </div>
+
+            <!-- Create a destination without leaving the dialog. Collapsed to
+                 a single affordance until it is wanted, so the common case —
+                 choosing somewhere that already exists — stays uncluttered. -->
+            <div class="mt-3">
+                <button
+                    v-if="!creating"
+                    type="button"
+                    class="inline-flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm font-bold text-[#07559e] transition hover:bg-sky-50"
+                    @click="startCreating">
+                    <i class="fa-solid fa-folder-plus" aria-hidden="true"></i>New folder in {{ targetLabel }}
+                </button>
+                <div v-else class="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <span class="text-xs font-semibold uppercase tracking-wide text-slate-500">New folder in {{ targetLabel }}</span>
+                    <div class="mt-2 flex flex-wrap items-start gap-2">
+                        <label class="min-w-0 flex-1">
+                            <span class="sr-only">Folder name</span>
+                            <input
+                                v-model="newName"
+                                class="field !mt-0"
+                                :class="{ 'border-rose-500': createError }"
+                                placeholder="Folder name"
+                                maxlength="255"
+                                @keydown.enter.prevent="createFolder"
+                                @keydown.esc.prevent="creating = false" />
+                        </label>
+                        <button
+                            type="button"
+                            class="inline-flex items-center gap-2 rounded-lg bg-[#00aeef] px-4 py-2.5 text-sm font-bold text-white transition hover:bg-[#009bd8] disabled:opacity-60"
+                            :disabled="saving || newName.trim() === ''"
+                            @click="createFolder">
+                            <i class="fa-solid fa-check" aria-hidden="true"></i>{{ saving ? 'Creating…' : 'Create' }}
+                        </button>
+                        <button type="button" class="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-50" @click="creating = false">Cancel</button>
+                    </div>
+                    <p v-if="createError" class="error">{{ createError }}</p>
+                </div>
             </div>
 
             <p class="mt-3 rounded-xl bg-sky-50 px-4 py-3 text-sm font-semibold text-[#07559e]">

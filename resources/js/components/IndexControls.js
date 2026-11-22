@@ -24,6 +24,14 @@ export default defineComponent({
             </label>
             <span class="hidden h-8 w-px shrink-0 bg-slate-200 sm:block" aria-hidden="true"></span>
             <label data-tour="index-entries" class="inline-flex items-center gap-3 whitespace-nowrap text-sm font-bold text-slate-700 [&_[data-searchable-select]_button]:h-[42px]">Show <select :value="entries" class="rounded-lg border border-slate-300 px-3 py-2 text-slate-700" @change="$emit('update:entries', Number($event.target.value)); $emit('search')"> <option v-for="option in entriesOptions" :key="option" :value="option">{{ option }}</option> </select> </label>
+            <!-- Where a page puts its Filter button: immediately after the
+                 page-size control and before Add, so the row reads
+                 search, how many, narrow it, then the one action that
+                 creates something. A slot rather than a prop, because what
+                 a page filters by is the page's business - this component
+                 only owns where the control sits, so every index puts it in
+                 the same place. -->
+            <slot name="actions" />
             <Link v-if="addHref" :href="addHref" data-tour="add-button" class="inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-[#00aeef] px-4 h-[42px] text-sm font-bold text-white transition hover:bg-[#009bd8] sm:ml-3"><i class="fa-solid fa-plus" aria-hidden="true"></i>{{ addLabel }}</Link>
         </div>
         <div data-admin-index-filter-slot data-tour="index-filters" class="grid grid-cols-1 items-end gap-x-4 gap-y-4 empty:hidden sm:grid-cols-2 [&>button]:col-span-full [&>button]:justify-self-start [&_label]:flex [&_label]:flex-col [&_label]:items-stretch [&_label]:gap-1.5 [&_label]:text-[13px] [&_label]:font-bold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_label_input]:!ml-0 [&_label_input]:h-[42px] [&_label_input]:w-full [&_label_input]:text-sm [&_label_input]:font-medium [&_label_input]:normal-case [&_label_input]:tracking-normal [&_label_input]:text-slate-700 [&_[data-searchable-select]_button]:h-[42px] [&_[data-searchable-select]]:!ml-0 [&_[data-searchable-select]]:!block [&_[data-searchable-select]]:!w-full [&_[data-searchable-select]]:!max-w-none [&_[data-searchable-select]]:text-sm [&_[data-searchable-select]]:font-medium [&_[data-searchable-select]]:normal-case [&_[data-searchable-select]]:tracking-normal [&_[data-searchable-select]]:text-slate-700" :class="filterColumns === 5 ? 'lg:grid-cols-5' : 'lg:grid-cols-4'">

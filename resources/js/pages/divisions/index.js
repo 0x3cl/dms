@@ -5,10 +5,11 @@ import Card from '../../components/Card';
 import ConfirmActionModal from '../../components/ConfirmActionModal';
 import IndexControls from '../../components/IndexControls';
 import Pagination from '../../components/Pagination';
+import RowActions from '../../components/RowActions';
 
 export default defineComponent({
     name: 'DivisionsIndex',
-    components: { AdminShell, Card, ConfirmActionModal, Head, IndexControls, Link, Pagination },
+    components: { AdminShell, Card, ConfirmActionModal, Head, IndexControls, Link, Pagination, RowActions },
     props: {
         divisions: { type: Object, required: true },
         filters: { type: Object, required: true },
@@ -79,8 +80,13 @@ export default defineComponent({
                             <td class="px-4 py-4 text-slate-600">{{ division.sections_count }}</td>
                             <td class="px-4 py-4 text-slate-600">{{ division.users_count }}</td>
                             <td class="whitespace-nowrap px-4 py-4 text-right">
-                                <Link :href="'/divisions/' + division.id + '/edit'" class="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-bold text-[#07559e] hover:bg-sky-100"><i class="fa-solid fa-pen" aria-hidden="true"></i>Edit</Link>
-                                <button type="button" class="ml-2 inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-bold text-rose-600 hover:bg-rose-50" @click="deleting = division"><i class="fa-solid fa-trash" aria-hidden="true"></i>Delete</button>
+                                <RowActions
+                                    :label="'Actions for ' + division.name"
+                                    :actions="[
+                                        { key: 'edit', label: 'Edit', icon: 'fa-solid fa-pen', tone: 'primary', href: '/divisions/' + division.id + '/edit' },
+                                        { key: 'delete', label: 'Delete', icon: 'fa-solid fa-trash', tone: 'danger' },
+                                    ]"
+                                    @select="deleting = division" />
                             </td>
                         </tr>
                         <tr v-if="divisions.data.length === 0">

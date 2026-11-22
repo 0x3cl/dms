@@ -1,5 +1,6 @@
-import { Link, router, usePage } from '@inertiajs/vue3';
+import { Link, router, useForm, usePage } from '@inertiajs/vue3';
 import { computed, defineComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import AccessRequestsMenu from './AccessRequestsMenu';
 import ConfirmActionModal from './ConfirmActionModal';
 import FeedbackModal from './FeedbackModal';
 import NotificationBell from './NotificationBell';
@@ -56,7 +57,7 @@ const GROUP_ORDER = ['Overview', 'Documents', 'Storage', 'Reports', 'Directory',
 
 export default defineComponent({
     name: 'AdminShell',
-    components: { ConfirmActionModal, FeedbackModal, Link, NotificationBell, ThemeToggle, TutorialMenu, UserAvatar },
+    components: { AccessRequestsMenu, ConfirmActionModal, FeedbackModal, Link, NotificationBell, ThemeToggle, TutorialMenu, UserAvatar },
     props: {
         active: { type: String, required: true },
         title: { type: String, required: true },
@@ -76,15 +77,55 @@ export default defineComponent({
             });
         };
 
-        // Flash messages surface as a modal, not a toast — there is no toast
-        // component in this design system.
-        const feedback = ref({ message: '', open: false, title: '', tone: 'success' });
+        /*
+         * The two flash keys are answered differently, on purpose.
+         *
+         * A success is the outcome the person just asked for, so it goes to
+         * `ToastStack` (mounted in app.js) and does not interrupt the work it
+         * completed. A failure blocks: a refusal the reader scrolls past is a
+         * refusal they will act as though never happened.
+         *
+         * The title is reworded rather than made configurable. "Something went
+         * wrong" sat over every refusal in the app, including "you are not on
+         * this document's recipient list" — which is not a fault, it is an
+         * answer, and labelling it as a malfunction told the reader to retry
+         * something that will never work. A per-case title would mean a third
+         * flash key, and `success`/`error` being the only two is a rule worth
+         * more than a bespoke heading: the specifics belong in the message,
+         * which is what the controller already writes.
+         */
+        const feedback = ref({ message: '', open: false, title: '', tone: 'error' });
         const showFeedback = (title, message, tone) => {
             if (!message) return;
             feedback.value = { message, open: true, title, tone };
         };
-        watch(() => page.props.flash?.success, (message) => showFeedback('Saved successfully', message, 'success'), { immediate: true });
-        watch(() => page.props.flash?.error, (message) => showFeedback('Something went wrong', message, 'error'), { immediate: true });
+        watch(() => page.props.flash, (flash) => showFeedback('That did not go through', flash?.error, 'error'), { immediate: true });
+
+        /*
+         * A refused reader is offered the one thing that can change the answer.
+         *
+         * The refusal itself is untouched — same redirect, same flash — but
+         * when the server says the document is one you could ask for, the
+         * modal grows a "Request access" button. Doing it here rather than on
+         * the dashboard means every route that refuses gets the offer for
+         * free, and no page has to know about it.
+         */
+        const askingFor = ref(null);
+        const requestForm = useForm({ code: '', message: '' });
+
+        const offerAccessRequest = computed(() => page.props.accessRequest?.code ?? null);
+
+        const startAccessRequest = () => {
+            feedback.value.open = false;
+            requestForm.reset();
+            requestForm.code = offerAccessRequest.value;
+            askingFor.value = offerAccessRequest.value;
+        };
+
+        const submitAccessRequest = () => requestForm.post('/access-requests', {
+            preserveScroll: true,
+            onSuccess: () => { askingFor.value = null; },
+        });
 
         const authUser = computed(() => page.props.auth?.user ?? null);
 
@@ -264,7 +305,12 @@ export default defineComponent({
             chooseMatch,
             clearModuleSearch,
             confirmingLogout,
+            askingFor,
             feedback,
+            offerAccessRequest,
+            requestForm,
+            startAccessRequest,
+            submitAccessRequest,
             groupedModules,
             headerEl,
             highlighted,
@@ -291,13 +337,41 @@ export default defineComponent({
                     <button type="button" class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-slate-300 text-slate-600 transition hover:border-[#07559e] hover:text-[#07559e] lg:hidden" data-tour="open-sidebar" aria-label="Open modules menu" @click="sidebarOpen = true">
                         <i class="fa-solid fa-bars" aria-hidden="true"></i>
                     </button>
-                    <div class="min-w-0">
+                    <!--
+                        Capped at 500px and never wider.
+
+                        The title is a page name on most screens and somebody's
+                        free text on a few — a document's, which can be a
+                        paragraph. Left to wrap, one of those turned the sticky
+                        header into three lines of heading with the bell and the
+                        menus pinned beside it, on every page the reader then
+                        scrolled. A cap is the only thing that makes the header a
+                        fixed object. It is a maximum, not a width, so a narrow
+                        screen gets whatever room there is.
+                    -->
+                    <div class="min-w-0 max-w-[500px]">
                         <p class="truncate text-[11px] font-semibold uppercase tracking-[0.16em] text-[#07559e] sm:text-xs">DocTrack</p>
-                        <h1 class="mt-0.5 text-lg font-semibold leading-tight text-slate-900 sm:mt-1 sm:text-xl lg:text-2xl">{{ title }}</h1>
+                        <!--
+                            Truncated and left at that, deliberately unlike the
+                            document page's own heading.
+
+                            This one is chrome: it sits in a sticky bar the
+                            reader passes under on the way to the page, and the
+                            full title is already the first thing on the page
+                            below — where it *is* scrollable. A second place to
+                            read the same string would put a scroll region in
+                            the one part of the layout that must not move. The
+                            tooltip is here for anybody who wants it without
+                            scrolling down.
+                        -->
+                        <h1
+                            class="mt-0.5 truncate text-lg font-semibold leading-tight text-slate-900 sm:mt-1 sm:text-xl lg:text-2xl"
+                            :title="title">{{ title }}</h1>
                     </div>
                 </div>
                 <div class="flex shrink-0 items-center gap-1 sm:gap-3">
                     <span data-tour="notifications"><NotificationBell /></span>
+                    <AccessRequestsMenu />
                     <TutorialMenu />
                     <span data-tour="theme-toggle"><ThemeToggle /></span>
                     <div class="relative" ref="profileMenuRoot">
@@ -312,9 +386,22 @@ export default defineComponent({
                             </span>
                             <i class="fa-solid fa-chevron-down hidden text-xs text-slate-400 sm:block" aria-hidden="true"></i>
                         </button>
-                        <div v-show="profileMenuOpen" class="absolute right-0 z-30 mt-2 w-56 rounded-lg border border-slate-200 bg-white py-2 shadow-lg">
+                        <div v-show="profileMenuOpen" class="absolute right-0 z-30 mt-2 w-[min(18rem,calc(100vw-2rem))] rounded-lg border border-slate-200 bg-white py-2 shadow-lg">
+                            <!-- Who is signed in, which the button beside it
+                                 only shows from the sm breakpoint up: on a
+                                 phone the menu
+                                 was the one place the account was named and it
+                                 did not name it. -->
+                            <div class="border-b border-slate-100 px-4 pb-2 sm:hidden">
+                                <p class="truncate text-sm font-semibold text-slate-900">{{ authUser?.name }}</p>
+                                <p class="truncate text-xs text-slate-500">{{ authUser?.employee_id }}</p>
+                            </div>
                             <Link href="/profile" class="flex items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100" @click="profileMenuOpen = false"><i class="fa-solid fa-circle-user w-4 text-center" aria-hidden="true"></i>My Account</Link>
-                            <Link href="/" class="flex items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100" @click="profileMenuOpen = false"><i class="fa-solid fa-house w-4 text-center" aria-hidden="true"></i>Public Site</Link>
+                            <!-- A real browser navigation, not an Inertia visit. The
+                                 landing page renders outside this shell, and an XHR
+                                 visit swapped the page component while leaving the
+                                 admin chrome's state behind it. -->
+                            <a href="/" class="flex items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100" @click="profileMenuOpen = false"><i class="fa-solid fa-house w-4 text-center" aria-hidden="true"></i>Public Site</a>
                             <button type="button" class="flex w-full items-center gap-2 border-t border-slate-100 px-4 py-2 text-left text-sm text-rose-600 hover:bg-rose-50" @click="profileMenuOpen = false; confirmingLogout = true"><i class="fa-solid fa-arrow-right-from-bracket w-4 text-center" aria-hidden="true"></i>Sign Out</button>
                         </div>
                     </div>
@@ -402,7 +489,32 @@ export default defineComponent({
                 </div>
             </div>
         </section>
-        <FeedbackModal :open="feedback.open" :title="feedback.title" :message="feedback.message" :tone="feedback.tone" :icon="feedback.tone === 'error' ? 'fa-solid fa-circle-exclamation' : 'fa-solid fa-circle-check'" @close="feedback.open = false" />
+        <FeedbackModal
+            :open="feedback.open"
+            :title="feedback.title"
+            :message="feedback.message"
+            :tone="feedback.tone"
+            :icon="feedback.tone === 'error' ? 'fa-solid fa-circle-exclamation' : 'fa-solid fa-circle-check'"
+            :action-label="offerAccessRequest ? 'Request access' : ''"
+            action-icon="fa-solid fa-user-clock"
+            @action="startAccessRequest"
+            @close="feedback.open = false" />
+
+        <ConfirmActionModal
+            :open="Boolean(askingFor)"
+            :processing="requestForm.processing"
+            title="Request access"
+            :message="'Ask whoever uploaded ' + askingFor + ' to let you open it.'"
+            confirm-label="Send request"
+            icon="fa-solid fa-user-clock"
+            @close="askingFor = null"
+            @confirm="submitAccessRequest">
+            <label class="mt-5 block text-left">
+                <span class="text-sm font-semibold text-slate-700">Why do you need it? (optional)</span>
+                <textarea v-model="requestForm.message" rows="3" class="field" placeholder="A line of context makes it easier to say yes."></textarea>
+                <p v-if="requestForm.errors.message" class="error">{{ requestForm.errors.message }}</p>
+            </label>
+        </ConfirmActionModal>
         <ConfirmActionModal :open="confirmingLogout" :processing="loggingOut" title="Sign out?" message="Are you sure you want to sign out of your account?" confirm-label="Sign out" tone="danger" icon="fa-solid fa-arrow-right-from-bracket" @close="confirmingLogout = false" @confirm="logout" />
     </main>
 `,

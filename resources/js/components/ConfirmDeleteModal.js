@@ -3,21 +3,30 @@ import ConfirmActionModal from './ConfirmActionModal';
 import { readableSize } from '../utils/file-rows';
 
 /**
- * Deleting, behind a code that has to be typed and a count of what goes with it.
+ * Deleting — one component, two dialogs, because the two acts are not alike.
  *
- * Two things make this different from the confirmation dialog everything else
- * in the app uses.
+ * **Moving to trash is reversible, so it is an ordinary small confirmation.**
+ * It states what goes with it and asks. It used to demand a typed four-digit
+ * code in a max-w-3xl card, which made the reversible act heavier on screen
+ * than almost anything else in the app and trained people to type a code
+ * without reading the dialog it was guarding — the exact habit the code exists
+ * to interrupt. Spending that friction on something Trash can undo leaves none
+ * for the thing it cannot.
  *
- * **The code.** It is issued by the server, held in the session, spent on use,
- * and the delete endpoint refuses a request whose code does not match — see
- * App\\Services\\Files\\DeletionConfirmation. A code the page invented and
- * checked itself would be a label on a button, bypassed by anything that posts
- * the request directly. Four digits is a speed bump, not a secret: what it is
- * for is the muscle memory that confirms a dialog without reading it.
+ * **Erasing is permanent, so it keeps the code.** It is issued by the server,
+ * held in the session, spent on use, and the purge endpoint refuses a request
+ * whose code does not match — see App\\Services\\Files\\DeletionConfirmation.
+ * A code the page invented and checked itself would be a label on a button,
+ * bypassed by anything posting the request directly. Four digits is not a
+ * secret; what it defends against is the muscle memory that confirms a dialog
+ * without reading it, and spending it means a confirmation cannot be harvested
+ * once and reused.
  *
- * **The summary.** A folder delete is recursive, and "Delete folder?" does not
- * say that. The server counts the subtree — folders, files, bytes — so the
- * dialog can state the cost before it is paid, rather than after.
+ * **Both state the summary.** A folder delete is recursive, and "Delete
+ * folder?" does not say that. The server counts the subtree — folders, files,
+ * bytes — so the dialog can state the cost before it is paid rather than after,
+ * and that is information the reader needs whether or not the act can be
+ * undone.
  */
 export default defineComponent({
     name: 'ConfirmDeleteModal',
@@ -44,11 +53,12 @@ export default defineComponent({
         const csrf = () => document.querySelector('meta[name="csrf-token"]')?.content ?? '';
 
         /**
-         * Ask the server for a code and for what the delete would take.
+         * Ask the server what the delete would take, and — for a purge only —
+         * for a confirmation code.
          *
-         * Both on open, and both refused rather than guessed if the request
-         * fails: a dialog that showed a code the server does not know would
-         * confirm nothing and fail at the last step.
+         * The code is refused rather than guessed if the request fails: a
+         * dialog showing a code the server does not know would confirm nothing
+         * and fail at the last step. The count is a courtesy and may be absent.
          */
         const prepare = async () => {
             loading.value = true;
@@ -65,27 +75,33 @@ export default defineComponent({
 
             if (props.trashed) payload.append('trashed', '1');
 
+            const wantsCode = props.purpose === 'purge';
+
             try {
-                const [codeResponse, previewResponse] = await Promise.all([
-                    fetch('/files/confirm-code', {
-                        method: 'POST',
-                        headers: {
-                            Accept: 'application/json',
-                            'Content-Type': 'application/x-www-form-urlencoded',
-                            'X-CSRF-TOKEN': csrf(),
-                        },
-                        credentials: 'same-origin',
-                        body: new URLSearchParams({ purpose: props.purpose }),
-                    }),
+                const [previewResponse, codeResponse] = await Promise.all([
                     fetch(`/files/delete-preview?${payload.toString()}`, {
                         headers: { Accept: 'application/json' },
                         credentials: 'same-origin',
                     }),
+                    wantsCode
+                        ? fetch('/files/confirm-code', {
+                            method: 'POST',
+                            headers: {
+                                Accept: 'application/json',
+                                'Content-Type': 'application/x-www-form-urlencoded',
+                                'X-CSRF-TOKEN': csrf(),
+                            },
+                            credentials: 'same-origin',
+                            body: new URLSearchParams({ purpose: props.purpose }),
+                        })
+                        : Promise.resolve(null),
                 ]);
 
-                if (!codeResponse.ok) throw new Error('code');
+                if (wantsCode) {
+                    if (!codeResponse?.ok) throw new Error('code');
 
-                issued.value = (await codeResponse.json()).code;
+                    issued.value = (await codeResponse.json()).code;
+                }
 
                 // The summary is a courtesy, so a failure to count does not
                 // block the delete — the code is the part that must hold.
@@ -102,7 +118,9 @@ export default defineComponent({
         });
 
         const permanent = computed(() => props.purpose === 'purge');
-        const matches = computed(() => issued.value !== '' && typed.value === issued.value);
+        // Only the irreversible one has anything to match. Trash is confirmed
+        // by pressing the button, like every other reversible action here.
+        const matches = computed(() => !permanent.value || (issued.value !== '' && typed.value === issued.value));
         const folderCount = computed(() => summary.value?.folders ?? 0);
         const fileCount = computed(() => summary.value?.files ?? 0);
 
@@ -137,7 +155,7 @@ export default defineComponent({
         :confirm-disabled="!matches"
         tone="danger"
         :icon="permanent ? 'fa-solid fa-fire' : 'fa-solid fa-trash'"
-        wide
+        :wide="permanent"
         @close="$emit('close')"
         @confirm="$emit('confirm', typed)">
         <div class="space-y-4 text-left">
@@ -156,12 +174,17 @@ export default defineComponent({
                 </ul>
             </div>
 
-            <div class="rounded-xl border border-slate-200 bg-slate-50 px-4 py-4">
-                <p class="text-sm font-semibold text-slate-700">Type this code to confirm</p>
-                <p v-if="loading" class="mt-2 text-sm text-slate-500">Issuing a code…</p>
-                <p v-else-if="failed" class="mt-2 text-sm font-semibold text-rose-600">{{ failed }}</p>
-                <p v-else class="mt-2 font-mono text-3xl font-bold tracking-[0.4em] text-slate-900" aria-label="Confirmation code">{{ issued }}</p>
-                <label class="mt-3 block">
+            <!-- The code guards the irreversible act only. Trash is undone from
+                 the Trash screen, so spending this friction there would leave
+                 none for the delete that cannot be taken back. -->
+            <div v-if="permanent" class="flex flex-wrap items-center gap-x-5 gap-y-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3.5">
+                <div class="min-w-0">
+                    <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Type this code to confirm</p>
+                    <p v-if="loading" class="mt-1 text-sm text-slate-500">Issuing a code…</p>
+                    <p v-else-if="failed" class="mt-1 text-sm font-semibold text-rose-600">{{ failed }}</p>
+                    <p v-else class="mt-1 font-mono text-2xl font-bold tracking-[0.35em] text-slate-900" aria-label="Confirmation code">{{ issued }}</p>
+                </div>
+                <label class="block">
                     <span class="sr-only">Confirmation code</span>
                     <input
                         v-model="typed"
@@ -169,10 +192,10 @@ export default defineComponent({
                         autocomplete="off"
                         maxlength="4"
                         placeholder="0000"
-                        class="field max-w-[10rem] text-center font-mono text-xl tracking-[0.3em]"
+                        class="field !mt-0 max-w-[8.5rem] text-center font-mono text-lg tracking-[0.3em]"
                         :class="{ 'border-rose-500': typed.length === 4 && !matches }" />
                 </label>
-                <p v-if="typed.length === 4 && !matches" class="error">That does not match the code above.</p>
+                <p v-if="typed.length === 4 && !matches" class="error w-full">That does not match the code above.</p>
             </div>
 
             <p v-if="error" class="error">{{ error }}</p>

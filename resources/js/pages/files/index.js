@@ -8,13 +8,18 @@ import FileBreadcrumbs from '../../components/FileBreadcrumbs';
 import FileFilterModal from '../../components/FileFilterModal';
 import FileGrid from '../../components/FileGrid';
 import FilePreviewModal from '../../components/FilePreviewModal';
+import FileVersionsModal from '../../components/FileVersionsModal';
+import ReplaceFileModal from '../../components/ReplaceFileModal';
 import FileTable from '../../components/FileTable';
 import FolderPickerModal from '../../components/FolderPickerModal';
 import IndexControls from '../../components/IndexControls';
 import Pagination from '../../components/Pagination';
 import RecipientPicker from '../../components/RecipientPicker';
 import ShareDrawer from '../../components/ShareDrawer';
+import UploadLimitsHint from '../../components/UploadLimitsHint';
 import ViewToggle from '../../components/ViewToggle';
+import SearchableSelect from '../../components/SearchableSelect';
+import usePreviewDescriptor from '../../composables/usePreviewDescriptor';
 
 /**
  * My Files — the whole of a person's storage, their own and what has been
@@ -34,11 +39,7 @@ import ViewToggle from '../../components/ViewToggle';
  */
 export default defineComponent({
     name: 'FilesIndex',
-    components: {
-        AdminShell, Card, ConfirmActionModal, ConfirmDeleteModal, FileBreadcrumbs,
-        FileFilterModal, FileGrid, FilePreviewModal, FileTable, FolderPickerModal,
-        Head, IndexControls, Pagination, RecipientPicker, ShareDrawer, ViewToggle,
-    },
+    components: { AdminShell, Card, ConfirmActionModal, ConfirmDeleteModal, FileBreadcrumbs, FileFilterModal, FileGrid, FilePreviewModal, FileVersionsModal, ReplaceFileModal, FileTable, FolderPickerModal, Head, IndexControls, Pagination, RecipientPicker, SearchableSelect, ShareDrawer, UploadLimitsHint, ViewToggle },
     props: {
         files: { type: Object, required: true },
         folders: { type: Array, required: true },
@@ -48,8 +49,14 @@ export default defineComponent({
         entriesOptions: { type: Array, required: true },
         visibilities: { type: Array, required: true },
         categories: { type: Array, required: true },
+        // The administrator's upload policy for personal storage, so the
+        // dialog offers what the server will accept rather than everything.
+        limits: { type: Object, default: null },
         owners: { type: Array, default: () => [] },
         people: { type: Array, default: () => [] },
+        documentTypes: { type: Array, default: () => [] },
+        documentVisibilities: { type: Array, default: () => [] },
+        canTrackDocuments: { type: Boolean, default: false },
         can: { type: Object, required: true },
     },
     setup(props) {
@@ -101,9 +108,22 @@ export default defineComponent({
             if (at === -1) selected.value.push(publicId); else selected.value.splice(at, 1);
         };
         const clearSelection = () => { selected.value = []; };
-        const selectedRows = computed(() => props.files.data
-            .filter((file) => selected.value.includes(file.public_id))
-            .map((file) => ({ kind: 'file', public_id: file.public_id, name: file.name })));
+        /*
+         * Folders count too.
+         *
+         * This only ever mapped `props.files.data`, so a folder could never be
+         * part of a bulk Move, Copy or Delete however it was clicked — and the
+         * grid gave folder cards no checkbox at all, which at least made the
+         * limitation visible. `FileManager` has always accepted a folder as
+         * the subject of all three (it resolves the ability on the subject
+         * *and* the destination), so nothing underneath had to change.
+         */
+        const selectedRows = computed(() => [
+            ...props.folders.filter((folder) => selected.value.includes(folder.public_id))
+                .map((folder) => ({ kind: 'folder', public_id: folder.public_id, name: folder.name })),
+            ...props.files.data.filter((file) => selected.value.includes(file.public_id))
+                .map((file) => ({ kind: 'file', public_id: file.public_id, name: file.name })),
+        ]);
 
         // ------------------------------------------------------------ preview
         /*
@@ -114,38 +134,75 @@ export default defineComponent({
          * navigation, all but one unused.
          */
         const previewIndex = ref(-1);
-        const previewFile = ref(null);
         const previewable = computed(() => props.files.data.filter((file) => file.can.view));
 
-        const describe = async (file) => {
-            previewFile.value = null;
+        /*
+         * Document types, grouped by the server and shown under their
+         * headings — the same list and the same arrangement the Documents
+         * upload form offers, because they are one picker on two screens.
+         */
+        const trackingTypeOptions = computed(() => props.documentTypes.map((group) => ({
+            label: group.label,
+            options: (group.options ?? []).map((type) => ({
+                value: type.value,
+                label: `${type.label} (${type.code})`,
+            })),
+        })));
+        const { describe, descriptor: previewFile, forget, loading: previewLoading, prefetch } = usePreviewDescriptor();
 
-            try {
-                const response = await fetch(`/files/preview?owner=${file.owner_public_id}&file=${file.public_id}`, {
-                    headers: { Accept: 'application/json' },
-                    credentials: 'same-origin',
-                });
+        /** The files either side, so arrow navigation is already answered. */
+        const neighboursOf = (index) => [previewable.value[index - 1], previewable.value[index + 1]].filter(Boolean);
 
-                previewFile.value = response.ok
-                    ? await response.json()
-                    : { mode: 'none', name: file.name, can_download: false };
-            } catch {
-                previewFile.value = { mode: 'none', name: file.name, can_download: false };
-            }
+        const show = (index) => {
+            previewIndex.value = index;
+            describe(previewable.value[index], neighboursOf(index));
         };
 
         const openPreview = (file) => {
-            previewIndex.value = previewable.value.findIndex((candidate) => candidate.public_id === file.public_id);
-            describe(file);
+            const index = previewable.value.findIndex((candidate) => candidate.public_id === file.public_id);
+
+            if (index < 0) return;
+
+            show(index);
         };
-        const closePreview = () => { previewIndex.value = -1; previewFile.value = null; };
+
+        /*
+         * A hover is a strong hint that a click is coming, so the descriptor is
+         * fetched then — by the time the modal opens, the Office viewer's URL
+         * is already in hand and only Microsoft's own render is left to wait
+         * for. Harmless if the click never comes: the result is a cache entry.
+         */
+        const prefetchPreview = (file) => {
+            if (file?.can?.view) prefetch(file);
+        };
+
+        /*
+         * "Show versions" in the preview, for a tracked file that has them.
+         *
+         * Two conditions, and both are the point. A file at version 1 has no
+         * history to show, and an **untracked** file has a history with
+         * nowhere to send anybody — its versions live in the kebab's own
+         * panel, which stays exactly as it was. A tracked file is the case
+         * where the better answer is a different page: the document, where
+         * the history sits beside the trail, the recipients and the label.
+         *
+         * Read off the listing row rather than the descriptor, because the
+         * tracking jacket is a fact about the file and the descriptor is a
+         * fact about the bytes.
+         */
+        const previewVersionsHref = computed(() => {
+            const row = previewable.value[previewIndex.value];
+
+            return row?.tracked && (row.version ?? 1) > 1 ? row.tracked.url : null;
+        });
+
+        const closePreview = () => { previewIndex.value = -1; forget(); };
         const navigatePreview = (step) => {
             const next = previewIndex.value + step;
 
             if (next < 0 || next >= previewable.value.length) return;
 
-            previewIndex.value = next;
-            describe(previewable.value[next]);
+            show(next);
         };
 
         // ------------------------------------------------------------- modals
@@ -178,12 +235,59 @@ export default defineComponent({
             onSuccess: () => { creatingFolder.value = false; newFolder.reset('name', 'recipients'); },
         });
 
-        const uploads = useForm({ folder: props.folder.public_id, files: [] });
+        /*
+         * Upload, optionally with a tracking jacket.
+         *
+         * The document fields are the same four the register's own form asks
+         * for, and they go to the same `DocumentRegistrar` — so a file tracked
+         * from here is indistinguishable from one uploaded through Documents,
+         * except that it stays in the folder you were looking at.
+         */
+        const uploads = useForm({
+            folder: props.folder.public_id,
+            files: [],
+            track: false,
+            title: '',
+            document_type_id: '',
+            visibility: 'public',
+            recipients: [],
+        });
         const uploading = ref(false);
+
+        /** A tracking code names one document, so tracking takes one file. */
+        const canTrack = computed(() => uploads.files.length === 1);
+        const trackedVisibility = computed(
+            () => (props.documentVisibilities ?? []).find((level) => level.value === uploads.visibility) ?? null,
+        );
+
+        const chooseFiles = (event) => {
+            uploads.files = Array.from(event.target.files);
+
+            // Title defaults to the filename without its extension — almost
+            // always what the person would have typed.
+            if (uploads.files.length === 1 && uploads.title === '') {
+                uploads.title = uploads.files[0].name.replace(/\.[^.]+$/, '');
+            }
+
+            if (!canTrack.value) uploads.track = false;
+        };
+
+        const openUploadDialog = () => {
+            uploading.value = true;
+
+            // The pickers' data is lazy, exactly as the New folder dialog does
+            // it: a listing should not ship every account and document type to
+            // everyone who merely opens a folder.
+            router.reload({ only: ['people', 'documentTypes', 'documentVisibilities'] });
+        };
+
         const submitUpload = () => uploads.post('/files/upload', {
             forceFormData: true,
             preserveScroll: true,
-            onSuccess: () => { uploading.value = false; uploads.reset('files'); },
+            onSuccess: () => {
+                uploading.value = false;
+                uploads.reset('files', 'track', 'title', 'document_type_id', 'visibility', 'recipients');
+            },
         });
 
         const renaming = ref(null);
@@ -250,15 +354,17 @@ export default defineComponent({
             deleteError.value = '';
             deleting.value = { items };
         };
-        const confirmDelete = (code) => {
+        // No `confirmation` here: moving to trash is reversible and is
+        // confirmed by pressing the button. The typed code guards the purge in
+        // Trash, which is the delete nothing can undo.
+        const confirmDelete = () => {
             deleteProcessing.value = true;
             router.post('/files/delete', {
                 items: deleting.value.items.map(({ kind, public_id: publicId }) => ({ kind, public_id: publicId })),
-                confirmation: code,
             }, {
                 preserveScroll: true,
                 onError: (errors) => {
-                    deleteError.value = errors.confirmation ?? errors.item ?? 'That could not be deleted.';
+                    deleteError.value = errors.items ?? errors.item ?? 'That could not be deleted.';
                 },
                 onSuccess: () => { deleting.value = null; clearSelection(); },
                 onFinish: () => { deleteProcessing.value = false; },
@@ -266,10 +372,21 @@ export default defineComponent({
         };
 
         /** The kebab menu is data, so one handler fans out to the modals. */
+        /*
+         * Replacing a file and reading its history: both act on an item in
+         * place, so both are dialogs over the row rather than navigations.
+         * The history is fetched by the modal when it opens — the entries
+         * carry URLs that open bytes, so a listing must not carry them.
+         */
+        const replacing = ref(null);
+        const versioning = ref(null);
+
         const act = ({ item, kind, action }) => {
             const row = { kind, public_id: item.public_id, name: item.name };
 
             if (action === 'preview') { openPreview(item); return; }
+            if (action === 'replace') { replacing.value = item; return; }
+            if (action === 'versions') { versioning.value = item; return; }
             if (action === 'download') { window.location = streamUrl(item); return; }
             if (action === 'rename') { startRename(item, kind); return; }
             if (action === 'privacy') { startPrivacy(item, kind); return; }
@@ -319,10 +436,12 @@ export default defineComponent({
         };
 
         return {
+            replacing, versioning,
+            canTrack, chooseFiles, openUploadDialog, trackedVisibility,
             act, activeFilters, applyFilters, changingPrivacy, clearSelection, closePreview, confirmDelete, openFolderDialog,
             confirmRelocate, creatingFolder, deleteError, deleteProcessing, deleting, downloadSelection,
             filtering, filters, folderHref, load, navigatePreview, newFolder, onOpen, openPreview, page,
-            previewFile, previewIndex, previewable, privacyForm, relocateError, relocateProcessing, relocating,
+            prefetchPreview, previewFile, previewIndex, previewLoading, previewVersionsHref, previewable, privacyForm, relocateError, relocateProcessing, relocating,
             renameForm, renaming, search, selected, selectedRows, setView, sharing, sortBy, startDelete,
             startRelocate, submitFolder, submitPrivacy, submitRename, submitUpload, uploading, uploads,
         };
@@ -347,7 +466,7 @@ export default defineComponent({
                     <button v-if="can.create && folder.can_write" type="button" class="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-50" data-tour="files-new-folder" @click="openFolderDialog">
                         <i class="fa-solid fa-folder-plus" aria-hidden="true"></i>New folder
                     </button>
-                    <button v-if="can.upload && folder.can_write" type="button" class="inline-flex items-center gap-2 rounded-lg bg-[#00aeef] px-4 py-2.5 text-sm font-bold text-white transition hover:bg-[#009bd8]" data-tour="files-upload" @click="uploading = true">
+                    <button v-if="can.upload && folder.can_write" type="button" class="inline-flex items-center gap-2 rounded-lg bg-[#00aeef] px-4 py-2.5 text-sm font-bold text-white transition hover:bg-[#009bd8]" data-tour="files-upload" @click="openUploadDialog">
                         <i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i>Upload
                     </button>
                 </div>
@@ -396,6 +515,7 @@ export default defineComponent({
                 :selected="selected"
                 @act="act"
                 @open="onOpen"
+                @prefetch="prefetchPreview"
                 @preview="openPreview" />
             <FileTable
                 v-else
@@ -407,6 +527,7 @@ export default defineComponent({
                 :selected="selected"
                 @act="act"
                 @open="onOpen"
+                @prefetch="prefetchPreview"
                 @preview="openPreview"
                 @sort="sortBy" />
 
@@ -416,10 +537,25 @@ export default defineComponent({
         <FilePreviewModal
             :open="previewIndex >= 0"
             :file="previewFile"
+            :loading="previewLoading"
             :has-previous="previewIndex > 0"
             :has-next="previewIndex >= 0 && previewIndex < previewable.length - 1"
+            :versions-href="previewVersionsHref"
             @close="closePreview"
             @navigate="navigatePreview" />
+
+        <ReplaceFileModal
+            :open="replacing !== null"
+            :item="replacing"
+            :limits="limits"
+            @close="replacing = null"
+            @replaced="load" />
+
+        <FileVersionsModal
+            :open="versioning !== null"
+            :item="versioning"
+            @close="versioning = null"
+            @reverted="load" />
 
         <FileFilterModal
             :open="filtering"
@@ -486,12 +622,86 @@ export default defineComponent({
             icon="fa-solid fa-cloud-arrow-up"
             @close="uploading = false"
             @confirm="submitUpload">
-            <label class="block text-left">
-                <span class="required-label text-sm font-semibold text-slate-700">Choose files</span>
-                <input type="file" multiple class="field file:mr-4 file:rounded-lg file:border-0 file:bg-sky-100 file:px-4 file:py-2 file:text-sm file:font-bold file:text-[#07559e]" @input="uploads.files = Array.from($event.target.files)" />
-                <p v-if="uploads.errors.files" class="error">{{ uploads.errors.files }}</p>
-                <p v-if="uploads.errors['files.0']" class="error">{{ uploads.errors['files.0'] }}</p>
-            </label>
+            <div class="text-left">
+                <label class="block">
+                    <span class="required-label text-sm font-semibold text-slate-700">Choose files</span>
+                    <input type="file" :multiple="!uploads.track" :accept="limits ? limits.accept : undefined" class="field file:mr-4 file:rounded-lg file:border-0 file:bg-sky-100 file:px-4 file:py-2 file:text-sm file:font-bold file:text-[#07559e]" @input="chooseFiles" />
+                    <p v-if="uploads.errors.files" class="error">{{ uploads.errors.files }}</p>
+                    <p v-if="uploads.errors['files.0']" class="error">{{ uploads.errors['files.0'] }}</p>
+                    <UploadLimitsHint :limits="limits" />
+                </label>
+
+                <!--
+                    Track this as a document.
+
+                    Off by default: most of what goes into personal storage is
+                    not an office document, and issuing a tracking code for a
+                    scratch file would fill the register with noise. Shown
+                    disabled rather than hidden when more than one file is
+                    chosen, so the limit is something you can read instead of a
+                    control that mysteriously is not there.
+                -->
+                <div v-if="canTrackDocuments" class="mt-5 rounded-xl border border-slate-200 p-4">
+                    <label class="flex items-start gap-3">
+                        <input type="checkbox" class="mt-1 h-4 w-4 rounded border-slate-300 accent-[#07559e] disabled:opacity-40" :disabled="!canTrack" v-model="uploads.track" />
+                        <span class="min-w-0">
+                            <span class="block text-sm font-bold text-slate-800">Track this document</span>
+                            <span class="block text-xs text-slate-500">
+                                <template v-if="canTrack">Issues a tracking code and a QR Tracker, and opens an audit trail — exactly as uploading through Documents does. The file stays in this folder.</template>
+                                <template v-else-if="uploads.files.length === 0">Choose a file first.</template>
+                                <template v-else>A tracking code names one document, so choose a single file. Several that belong together can go up as a zip.</template>
+                            </span>
+                        </span>
+                    </label>
+                    <p v-if="uploads.errors.track" class="error">{{ uploads.errors.track }}</p>
+
+                    <div v-if="uploads.track" class="mt-4 grid gap-4 border-t border-slate-200 pt-4">
+                        <label class="block">
+                            <span class="required-label text-sm font-semibold text-slate-700">Document title</span>
+                            <input v-model="uploads.title" class="field" :class="{ 'border-rose-500': uploads.errors.title }" />
+                            <p v-if="uploads.errors.title" class="error">{{ uploads.errors.title }}</p>
+                        </label>
+
+                        <div>
+                            <span class="required-label text-sm font-semibold text-slate-700">Document type</span>
+                            <div class="mt-2">
+                                <!-- Grouped by the server, exactly as the
+                                     upload form offers it: one list, one
+                                     arrangement. -->
+                                <SearchableSelect v-model="uploads.document_type_id" :options="trackingTypeOptions" placeholder="Select a type" :invalid="Boolean(uploads.errors.document_type_id)" />
+                            </div>
+                            <p v-if="uploads.errors.document_type_id" class="error">{{ uploads.errors.document_type_id }}</p>
+                            <p class="mt-1 text-xs text-slate-500">The type decides the prefix of the tracking code.</p>
+                        </div>
+
+                        <fieldset>
+                            <legend class="required-label text-sm font-semibold text-slate-700">Who can open this document?</legend>
+                            <div class="mt-2 grid gap-2">
+                                <label v-for="level in documentVisibilities" :key="level.value" class="flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition" :class="uploads.visibility === level.value ? 'border-[#00aeef] bg-sky-50' : 'border-slate-200 hover:border-slate-300'">
+                                    <input type="radio" class="mt-1 h-4 w-4 accent-[#07559e]" :value="level.value" v-model="uploads.visibility" />
+                                    <span class="min-w-0">
+                                        <span class="flex items-center gap-2 text-sm font-bold text-slate-800">
+                                            {{ level.label }}
+                                            <i v-if="!level.linkable" class="fa-solid fa-link-slash text-xs text-rose-500" aria-hidden="true" title="Cannot be shared by link"></i>
+                                        </span>
+                                        <span class="mt-0.5 block text-xs text-slate-500">{{ level.description }}</span>
+                                    </span>
+                                </label>
+                            </div>
+                            <p v-if="uploads.errors.visibility" class="error">{{ uploads.errors.visibility }}</p>
+                        </fieldset>
+
+                        <div v-if="trackedVisibility && trackedVisibility.taggable">
+                            <span class="text-sm font-semibold text-slate-700" :class="{ 'required-label': !trackedVisibility.linkable }">
+                                Tag the people who may open it
+                                <span v-if="trackedVisibility.linkable" class="font-normal text-slate-500">(optional)</span>
+                            </span>
+                            <RecipientPicker v-model="uploads.recipients" :people="people" class="mt-2" />
+                            <p v-if="uploads.errors.recipients" class="error">{{ uploads.errors.recipients }}</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </ConfirmActionModal>
 
         <ConfirmActionModal

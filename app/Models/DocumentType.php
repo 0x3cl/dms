@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
@@ -36,6 +37,7 @@ class DocumentType extends Model
     use HasFactory, SoftDeletes;
 
     protected $fillable = [
+        'group_id',
         'code',
         'name',
         'description',
@@ -52,6 +54,20 @@ class DocumentType extends Model
             'is_active' => 'boolean',
             'position' => 'integer',
         ];
+    }
+
+    /**
+     * The heading this type sits under in the picker.
+     *
+     * Nullable and `nullOnDelete`: a group is an arrangement of the picker,
+     * so deleting one must rearrange the picker and never retire a type. An
+     * ungrouped type shows under "Other".
+     *
+     * @return BelongsTo<DocumentTypeGroup, $this>
+     */
+    public function group(): BelongsTo
+    {
+        return $this->belongsTo(DocumentTypeGroup::class, 'group_id');
     }
 
     /**
@@ -80,9 +96,45 @@ class DocumentType extends Model
     {
         return self::query()
             ->active()
+            ->with('group:id,code,name,position')
             ->orderBy('position')
             ->orderBy('name')
-            ->get(['id', 'code', 'name']);
+            ->get(['id', 'group_id', 'code', 'name']);
+    }
+
+    /**
+     * The same list, arranged under its headings, for a grouped picker.
+     *
+     * Built here rather than in the page for the reason every list in this
+     * codebase is built on the server: the upload form and the file manager's
+     * tracking section both offer it, and two hand-built groupings is how one
+     * screen quietly offers a type the other does not.
+     *
+     * Groups are ordered by their own `position`; a type with no group falls
+     * into **Other**, last, rather than disappearing — which is what a
+     * deleted group must produce, since `group_id` nulls rather than
+     * cascading.
+     *
+     * @return list<array{label: string, options: list<array{value: int, label: string, code: string}>}>
+     */
+    public static function grouped(): array
+    {
+        $types = self::selectable();
+
+        $groups = $types
+            ->groupBy(fn (self $type) => $type->group?->name ?? 'Other')
+            ->sortBy(fn (Collection $rows, string $name) => $name === 'Other'
+                ? PHP_INT_MAX
+                : ($rows->first()->group?->position ?? PHP_INT_MAX - 1));
+
+        return $groups->map(fn (Collection $rows, string $name): array => [
+            'label' => $name,
+            'options' => $rows->map(fn (self $type): array => [
+                'value' => $type->id,
+                'label' => $type->name,
+                'code' => $type->code,
+            ])->values()->all(),
+        ])->values()->all();
     }
 
     /**
@@ -101,7 +153,9 @@ class DocumentType extends Model
         return self::withTrashed()
             ->orderBy('position')
             ->orderBy('name')
-            ->get(['id', 'code', 'name', 'is_active', 'deleted_at']);
+            // `group_id` so the filter dialog can narrow the type list to a
+            // chosen category without a second request.
+            ->get(['id', 'code', 'name', 'group_id', 'is_active', 'deleted_at']);
     }
 
     /**

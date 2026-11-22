@@ -2,13 +2,16 @@
 
 namespace App\Http\Controllers;
 
+use App\Contracts\StoredBytes;
 use App\Enums\ActivityAction;
 use App\Enums\FileAbility;
 use App\Models\File;
 use App\Services\Access\AccessResolver;
 use App\Services\Files\FileEventRecorder;
+use App\Services\Files\FileManager;
 use App\Services\Files\FilePreview;
 use App\Services\Files\FileStorage;
+use App\Services\Files\FileVersionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
@@ -39,11 +42,27 @@ class FileStreamController extends Controller
         private readonly FileStorage $storage,
         private readonly FileEventRecorder $events,
         private readonly FilePreview $preview,
+        private readonly FileVersionService $versions,
+        private readonly FileManager $files,
     ) {}
 
     public function show(Request $request, string $owner, string $file): StreamedResponse|BinaryFileResponse
     {
         $model = $this->locate($owner, $file);
+
+        /*
+         * Which version's bytes, as a query parameter beside `variant` and
+         * `disposition` — the convention this route already uses.
+         *
+         * Authorization below is unchanged and still resolves against the
+         * **file**, because a version has no access rule of its own: when the
+         * file carries a tracking code, `AccessResolver::forFile()` defers to
+         * its document, so a superseded version sits behind exactly the rule
+         * the current one does. A version that is not in this file's history
+         * is a 404 like everything else on this route, so a probe cannot tell
+         * "no such version" from "refused".
+         */
+        $bytes = $this->bytesFor($model, $request->integer('version') ?: null);
 
         /*
          * A thumbnail is a view of the file, so it needs the same `view`
@@ -59,7 +78,7 @@ class FileStreamController extends Controller
         if ($request->string('variant')->toString() === 'thumb') {
             $this->authorizeAbility($request, $model, FileAbility::View);
 
-            return $this->storage->thumbnail($model);
+            return $this->storage->thumbnail($bytes);
         }
 
         $wantsInline = $request->string('disposition')->toString() === 'inline';
@@ -68,7 +87,7 @@ class FileStreamController extends Controller
 
         // Checked before anything is recorded, so a file that has gone missing
         // off the disk never leaves a record of a release that did not happen.
-        abort_unless($this->storage->exists($model), 404, 'The stored file is missing.');
+        abort_unless($this->storage->exists($bytes), 404, 'The stored file is missing.');
 
         if ($wantsInline) {
             /*
@@ -77,16 +96,28 @@ class FileStreamController extends Controller
              * is a forged history: it says the person opened the document nine
              * times when they opened it once.
              */
-            $this->events->recordOnce(ActivityAction::Previewed, $model, $request->user(), $request);
+            $this->events->recordOnce(
+                ActivityAction::Previewed,
+                $model,
+                $request->user(),
+                $request,
+                version: $bytes->versionNumber(),
+            );
 
-            return $this->storage->inline($model);
+            return $this->storage->inline($bytes);
         }
 
         // A download is never debounced. Each one is a separate copy leaving
         // the server, which is the whole question the register answers.
-        $this->events->record(ActivityAction::Downloaded, $model, $request->user(), $request);
+        $this->events->record(
+            ActivityAction::Downloaded,
+            $model,
+            $request->user(),
+            $request,
+            version: $bytes->versionNumber(),
+        );
 
-        return $this->storage->download($model);
+        return $this->storage->download($bytes);
     }
 
     /**
@@ -108,12 +139,15 @@ class FileStreamController extends Controller
         $validated = $request->validate([
             'owner' => ['required', 'string', 'size:26'],
             'file' => ['required', 'string', 'size:26'],
+            'version' => ['nullable', 'integer', 'min:1'],
         ]);
 
         $model = $this->locate($validated['owner'], $validated['file']);
         $this->authorizeAbility($request, $model, FileAbility::View);
 
-        abort_unless($this->storage->exists($model), 404, 'The stored file is missing.');
+        $bytes = $this->bytesFor($model, $validated['version'] ?? null);
+
+        abort_unless($this->storage->exists($bytes), 404, 'The stored file is missing.');
 
         /*
          * Recorded here, debounced, rather than when the viewer fetches the
@@ -122,9 +156,39 @@ class FileStreamController extends Controller
          * this one, and recording on the other side would write a preview with
          * no actor or none at all.
          */
-        $this->events->recordOnce(ActivityAction::Previewed, $model, $request->user(), $request);
+        $this->events->recordOnce(
+            ActivityAction::Previewed,
+            $model,
+            $request->user(),
+            $request,
+            version: $bytes->versionNumber(),
+        );
 
-        return response()->json($this->preview->describe($model, $request->user()));
+        return response()->json($this->preview->describe($model, $request->user(), version: $bytes));
+    }
+
+    /**
+     * A file's whole version history, as the history panel renders it.
+     *
+     * Behind the `view` ability on the **file**, like the descriptor: knowing
+     * that a document was revised four times, by whom and why, is a disclosure
+     * about the document, so it answers to the document's own rule.
+     *
+     * Fetched rather than shipped as a page prop, for the same reason the
+     * descriptor is: each entry carries URLs that open bytes, and a listing of
+     * forty rows must not mint them for every row on every navigation.
+     */
+    public function versions(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'owner' => ['required', 'string', 'size:26'],
+            'file' => ['required', 'string', 'size:26'],
+        ]);
+
+        $model = $this->locate($validated['owner'], $validated['file']);
+        $this->authorizeAbility($request, $model, FileAbility::View);
+
+        return response()->json($this->versionPayload($model, $request));
     }
 
     /**
@@ -151,13 +215,88 @@ class FileStreamController extends Controller
     public function viewer(Request $request, string $owner, string $file): StreamedResponse|BinaryFileResponse
     {
         $model = $this->locate($owner, $file);
+        $bytes = $this->bytesFor($model, $request->integer('version') ?: null);
 
-        // Re-resolved rather than trusted to the signature: the signature says
-        // this URL was issued, not that the item is still shareable.
-        abort_unless($this->preview->mayLeaveForViewer($model), 404);
-        abort_unless($this->storage->exists($model), 404);
+        /*
+         * Re-resolved rather than trusted to the signature: the signature says
+         * this URL was issued, not that the item is still shareable.
+         *
+         * Note this now tests the **version's** extension and visibility,
+         * which is the whole reason the check takes the bytes rather than the
+         * file: a `.docx` version 1 under a file that is now a `.pdf` has to
+         * be judged as the docx it is.
+         */
+        abort_unless($this->preview->mayLeaveForViewer($model, $bytes), 404);
+        abort_unless($this->storage->exists($bytes), 404);
 
-        return $this->storage->inline($model);
+        /*
+         * `viewerStream()`, not `inline()`. An Office file is deliberately not
+         * an inline type here — this application must never render one in place
+         * — so `inline()` fell through to an attachment with no length, which
+         * is the slowest thing to hand a remote fetcher. See FileStorage.
+         */
+        return $this->storage->viewerStream($bytes);
+    }
+
+    /**
+     * The bytes a request is asking for: the current version, or one from the
+     * history.
+     *
+     * Null, or the current number, gives back the `File` itself — so no caller
+     * needs a special case for "the current one". Anything else must be a real
+     * entry in this file's history; a stray number is a 404, never a silent
+     * fallback to the current bytes, which would serve one version while the
+     * trail recorded another.
+     */
+    private function bytesFor(File $model, ?int $version): StoredBytes
+    {
+        if ($version === null) {
+            return $model;
+        }
+
+        $bytes = $this->versions->find($model, $version);
+
+        abort_if($bytes === null, 404);
+
+        return $bytes;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function versionPayload(File $model, Request $request): array
+    {
+        $grant = $this->access->grant($request->user(), $model);
+        $canDownload = $grant->allows(FileAbility::Download);
+
+        $entries = array_map(function (array $entry) use ($model, $canDownload): array {
+            $query = $entry['is_current'] ? '' : '&version='.$entry['version'];
+
+            return [
+                ...$entry,
+                'view_url' => route('files.stream', [
+                    'owner' => $model->owner?->public_id,
+                    'file' => $model->public_id,
+                ]).'?disposition=inline'.$query,
+                'download_url' => $canDownload ? route('files.stream', [
+                    'owner' => $model->owner?->public_id,
+                    'file' => $model->public_id,
+                ]).'?disposition=attachment'.$query : null,
+            ];
+        }, $this->versions->history($model));
+
+        return [
+            'current' => $model->versionNumber(),
+            /*
+             * Resolved once, against the file, and never per entry — a version
+             * has no rule of its own, and a per-entry answer would read as
+             * though it might.
+             */
+            'can_download' => $canDownload,
+            'can_revert' => $request->user() !== null
+                && $this->files->mayReplace($request->user(), $model),
+            'versions' => $entries,
+        ];
     }
 
     /**

@@ -1,20 +1,39 @@
 import { Head, router } from '@inertiajs/vue3';
-import { defineComponent, reactive } from 'vue';
+import { defineComponent, reactive, ref } from 'vue';
 import AdminShell from '../../components/AdminShell';
 import Card from '../../components/Card';
 import IndexControls from '../../components/IndexControls';
 import Pagination from '../../components/Pagination';
+import ConfirmActionModal from '../../components/ConfirmActionModal';
+import RowActions from '../../components/RowActions';
+import useLiveTrail from '../../composables/useLiveTrail';
 import { formatTimestamp } from '../../utils/format-date';
 
 export default defineComponent({
     name: 'ActivityTrails',
-    components: { AdminShell, Card, Head, IndexControls, Pagination },
+    components: { AdminShell, Card, ConfirmActionModal, Head, IndexControls, Pagination, RowActions },
     props: {
         entries: { type: Object, required: true },
         actions: { type: Array, required: true },
         filters: { type: Object, required: true },
     },
     setup(props) {
+        const inspecting = ref(null);
+
+        /*
+         * Live, when a websocket is available.
+         *
+         * This report reaches every account's storage and is heavily
+         * filtered, so it reloads only for an unfiltered viewer on page one —
+         * the one case where a new row definitely belongs at the top of what
+         * they are looking at. Everyone else gets the pill.
+         */
+        const { pending: liveEntries, refresh: refreshEntries } = useLiveTrail('activity-trails', {
+            prop: ['entries'],
+            isLive: () => (props.entries.current_page ?? 1) === 1
+                && Object.values(filters).every((value) => value === '' || value === null || value === undefined),
+        });
+
         const filters = reactive({ ...props.filters });
         let searchTimer;
 
@@ -41,7 +60,7 @@ export default defineComponent({
             return parts.join(' · ');
         };
 
-        return { filters, formatTimestamp, load, page, search, summarise };
+        return { inspecting, liveEntries, refreshEntries, filters, formatTimestamp, load, page, search, summarise };
     },
     template: `
     <Head title="Activity Trail" />
@@ -78,46 +97,101 @@ export default defineComponent({
                     </template>
                 </IndexControls>
             </div>
-            <div class="mt-6 overflow-x-auto">
-                <table class="w-full min-w-[1000px] text-left">
+            <!-- Office, Detail and IP were columns, which is what forced the
+                 min-w-[1000px]. They are in the detail modal now: the first two
+                 repeat down the page and the IP is the one value nobody scans
+                 a list for, but every value somebody opens a row to check. -->
+            <button
+                v-if="liveEntries"
+                type="button"
+                class="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-50 px-4 py-2.5 text-sm font-bold text-[#07559e] transition hover:bg-sky-100"
+                @click="refreshEntries">
+                <i class="fa-solid fa-arrow-rotate-right" aria-hidden="true"></i>
+                {{ liveEntries }} new {{ liveEntries === 1 ? 'entry' : 'entries' }} — refresh
+            </button>
+
+            <div class="mt-6">
+                <table class="w-full text-left">
                     <thead class="border-y border-slate-200 text-xs uppercase tracking-wide text-slate-500">
                         <tr>
                             <th class="px-4 py-4">When</th>
                             <th class="px-4 py-4">Who</th>
-                            <th class="px-4 py-4">Office</th>
                             <th class="px-4 py-4">Action</th>
                             <th class="px-4 py-4">Item</th>
-                            <th class="px-4 py-4">Detail</th>
-                            <th class="px-4 py-4">IP</th>
+                            <th class="px-4 py-4 text-right">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr v-for="entry in entries.data" :key="entry.id" class="border-b border-slate-100 hover:bg-sky-50/50">
                             <td class="px-4 py-4 text-slate-600">{{ formatTimestamp(entry.occurred_at) }}</td>
-                            <td class="px-4 py-4">
-                                <p class="font-bold text-slate-800">{{ entry.actor_name }}</p>
-                                <p v-if="entry.actor_employee_id" class="font-mono text-xs text-slate-500">{{ entry.actor_employee_id }}</p>
-                            </td>
-                            <td class="px-4 py-4 text-slate-600">
-                                <span v-if="entry.division_name">{{ entry.division_name }}</span>
-                                <span v-if="entry.section_name" class="text-slate-400"> / {{ entry.section_name }}</span>
-                                <span v-if="!entry.division_name && !entry.section_name" class="text-slate-400">—</span>
-                            </td>
+                            <td class="px-4 py-4 font-bold text-slate-800">{{ entry.actor_name }}</td>
                             <td class="whitespace-nowrap px-4 py-4 font-semibold text-slate-700">
                                 <i :class="entry.action_icon" class="mr-2 text-slate-400" aria-hidden="true"></i>{{ entry.action_label }}
                             </td>
                             <td class="px-4 py-4 text-slate-700">{{ entry.subject_label ?? '—' }}</td>
-                            <td class="px-4 py-4 text-slate-500">{{ summarise(entry) || '—' }}</td>
-                            <td class="px-4 py-4 font-mono text-xs text-slate-500">{{ entry.ip_address ?? '—' }}</td>
+                            <td class="px-4 py-4">
+                                <RowActions
+                                    :label="'Actions for ' + entry.action_label"
+                                    :actions="[{ key: 'view', label: 'View full entry', icon: 'fa-solid fa-eye', tone: 'primary' }]"
+                                    @select="inspecting = entry" />
+                            </td>
                         </tr>
                         <tr v-if="entries.data.length === 0">
-                            <td colspan="7" class="px-4 py-12 text-center text-slate-500">No activity matches those filters.</td>
+                            <td colspan="5" class="px-4 py-12 text-center text-slate-500">No activity matches those filters.</td>
                         </tr>
                     </tbody>
                 </table>
             </div>
             <Pagination :pagination="entries" @page="page" />
         </Card>
+
+        <!-- The office, the detail and the IP a copy went to. The snapshots are
+             what was true when it happened, not what the org chart says now. -->
+        <ConfirmActionModal
+            :open="Boolean(inspecting)"
+            :title="inspecting ? inspecting.action_label : 'Activity'"
+            :cancel-label="null"
+            confirm-label="Close"
+            :icon="inspecting ? inspecting.action_icon : 'fa-solid fa-clock-rotate-left'"
+            wide
+            @close="inspecting = null"
+            @confirm="inspecting = null">
+            <div v-if="inspecting" class="text-left">
+                <dl class="grid gap-4 sm:grid-cols-2">
+                    <div>
+                        <dt class="text-xs font-bold uppercase tracking-wide text-slate-500">Who</dt>
+                        <dd class="mt-1 text-sm font-semibold text-slate-800">
+                            {{ inspecting.actor_name }}
+                            <span v-if="inspecting.actor_employee_id" class="block font-mono text-xs font-normal text-slate-500">{{ inspecting.actor_employee_id }}</span>
+                        </dd>
+                    </div>
+                    <div>
+                        <dt class="text-xs font-bold uppercase tracking-wide text-slate-500">When</dt>
+                        <dd class="mt-1 text-sm font-semibold text-slate-800">{{ formatTimestamp(inspecting.occurred_at) }}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-xs font-bold uppercase tracking-wide text-slate-500">Office</dt>
+                        <dd class="mt-1 text-sm font-semibold text-slate-800">
+                            <span v-if="inspecting.division_name">{{ inspecting.division_name }}</span>
+                            <span v-if="inspecting.section_name" class="text-slate-500"> / {{ inspecting.section_name }}</span>
+                            <span v-if="!inspecting.division_name && !inspecting.section_name">—</span>
+                        </dd>
+                    </div>
+                    <div>
+                        <dt class="text-xs font-bold uppercase tracking-wide text-slate-500">IP address</dt>
+                        <dd class="mt-1 font-mono text-sm font-semibold text-slate-800">{{ inspecting.ip_address ?? '—' }}</dd>
+                    </div>
+                    <div class="sm:col-span-2">
+                        <dt class="text-xs font-bold uppercase tracking-wide text-slate-500">Item</dt>
+                        <dd class="mt-1 break-words text-sm font-semibold text-slate-800">{{ inspecting.subject_label ?? '—' }}</dd>
+                    </div>
+                    <div class="sm:col-span-2">
+                        <dt class="text-xs font-bold uppercase tracking-wide text-slate-500">Detail</dt>
+                        <dd class="mt-1 break-words text-sm text-slate-700">{{ summarise(inspecting) || '—' }}</dd>
+                    </div>
+                </dl>
+            </div>
+        </ConfirmActionModal>
     </AdminShell>
 `,
 });

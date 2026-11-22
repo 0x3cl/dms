@@ -2,9 +2,11 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\DocumentVisibility;
 use App\Enums\FileAbility;
 use App\Enums\FileCategory;
 use App\Enums\FileVisibility;
+use App\Models\DocumentType;
 use App\Models\File;
 use App\Models\Folder;
 use App\Models\ItemShare;
@@ -12,6 +14,7 @@ use App\Models\User;
 use App\Services\Access\AccessResolver;
 use App\Services\Access\AccessSource;
 use App\Services\Files\FileManager;
+use App\Services\Files\UploadPolicy;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -80,6 +83,13 @@ class FileManagerController extends Controller
             'visibilities' => $this->visibilityOptions(),
             'categories' => FileCategory::options(),
             /*
+             * What the upload dialog may offer, from the administrator's policy
+             * rather than from a literal in the template. The dialog had no
+             * `accept` at all, so the browser offered every file on the machine
+             * and the policy's refusal arrived only after the upload.
+             */
+            'limits' => app(UploadPolicy::class)->limits(),
+            /*
              * For the recipient picker on the New folder dialog — the same
              * shape documents/form.js gets, so the component is the same one.
              *
@@ -90,6 +100,28 @@ class FileManagerController extends Controller
              * fetches its own state instead of taking page props.
              */
             'people' => Inertia::optional(fn () => $this->directory($user)),
+            /*
+             * The document fields the upload dialog offers when "Track this
+             * document" is on. Lazy for the same reason `people` is: shipping
+             * every type and every access level with each folder navigation is
+             * a cost paid constantly for a dialog opened rarely.
+             */
+            // The same grouped arrangement the upload form offers — one list,
+            // one grouping, built once on the server.
+            'documentTypes' => Inertia::optional(fn () => DocumentType::grouped()),
+            'documentVisibilities' => Inertia::optional(fn () => array_map(
+                fn (DocumentVisibility $level): array => [
+                    'value' => $level->value,
+                    'label' => $level->label(),
+                    'description' => $level->description(),
+                    'linkable' => $level->linkable(),
+                    'taggable' => $level->taggable(),
+                ],
+                DocumentVisibility::cases(),
+            )),
+            // Whether to offer the control at all. The route gates
+            // `files.create`; issuing a tracking code is a different grant.
+            'canTrackDocuments' => $user->can('documents.create'),
             'can' => [
                 'create' => $user->can('files.create'),
                 'upload' => $user->can('files.create'),
@@ -259,6 +291,17 @@ class FileManagerController extends Controller
         $sharedFolderIds = $atOwnRoot ? $this->sharedIds($user, Folder::class) : collect();
 
         $files = $this->access->scopeVisible(File::query(), $user)
+            /*
+             * Eager-loaded so the tracked badge costs one query, not one per
+             * row — `File::isTracked()` runs an exists() each time it is asked.
+             *
+             * **Do not narrow this to a column list.** `AccessResolver::forFile()`
+             * reads `$file->document` and then asks it for `visibility`,
+             * `user_id` and its recipients; a partial select leaves those null
+             * and the resolver fatals on the first tracked row. A column
+             * subset here was a 500 on every listing that contained one.
+             */
+            ->with('document')
             ->where(fn (Builder $query) => $query
                 ->where('folder_id', $folder->id)
                 ->when($sharedFileIds->isNotEmpty(), fn (Builder $inner) => $inner->orWhereIn('id', $sharedFileIds)))
@@ -460,13 +503,53 @@ class FileManagerController extends Controller
     private function filePayload(File $file, User $user): array
     {
         $grant = $this->access->grant($user, $file);
-        $visibility = $this->access->effectiveVisibility($file);
+
+        /*
+         * A tracked file is badged with its **document's** classification,
+         * because that is the one that decides anything.
+         *
+         * `AccessResolver` answers a file carrying a tracking code by the
+         * tracked-document rule and never reaches the file row's own
+         * visibility — that is the whole point of the clause, so that the
+         * obfuscated file URL cannot be a looser second door to a document.
+         * But the badge was still drawn from the file row, which a tracked
+         * upload leaves at the folder's `private`. So a document the office
+         * had published read PRIVATE in My Files while anyone holding its
+         * printed code could open it: the badge stated the opposite of the
+         * rule in force, which is worse than no badge at all.
+         *
+         * The two enums carry the same three values and both answer
+         * `label()` and `tone()`, so the row renders identically either way.
+         */
+        $visibility = $file->relationLoaded('document') && $file->document
+            ? $file->document->visibility
+            : $this->access->effectiveVisibility($file);
 
         return [
             'public_id' => $file->public_id,
             'owner_public_id' => $file->owner?->public_id,
             'name' => $file->name,
             'original_name' => $file->original_name,
+            /*
+             * What a row is *called*, which is the current version's name
+             * and not the row's.
+             *
+             * `files.name` is the folder's label, frozen when the row was
+             * created and never rewritten by a replacement — that is
+             * deliberate, because it is half of the `(folder_id, name)`
+             * unique index and renaming on replace would have to consult
+             * `assertNameFree()`, which can refuse. The consequence was that
+             * a `.docx` replaced by a PDF kept its old name while the icon,
+             * the size and the bytes beside it were all the new version's:
+             * one row describing two different files.
+             *
+             * Every other surface already answers with the version's own
+             * name — a download arrives as it, the preview titles with it,
+             * the version history lists it — so the listing was the last
+             * place still showing the original. `downloadName()` is that one
+             * answer, which is why it is read here rather than restated.
+             */
+            'display_name' => $file->downloadName(),
             'extension' => $file->extension,
             'mime_type' => $file->mime_type,
             'size' => $file->size_bytes,
@@ -477,6 +560,32 @@ class FileManagerController extends Controller
             'visibility_label' => $visibility->label(),
             'visibility_tone' => $visibility->tone(),
             'has_thumbnail' => $file->has_thumbnail,
+            /*
+             * The version, so a row can badge "v2" and the kebab menu can
+             * offer a history only where there is one. One integer rather than
+             * the history itself: the entries carry URLs that open bytes, and
+             * forty rows must not mint them on every navigation.
+             */
+            'version' => $file->versionNumber(),
+            /*
+             * The tracking jacket, when there is one.
+             *
+             * `File::isTracked()` existed and nothing rendered it, so a
+             * tracked document sat in My Files looking like any other file —
+             * with no way to reach its trail, its QR Tracker or the people it
+             * was shared with. Nothing here is a credential: the code is
+             * printed on the label and the title is already on the row.
+             *
+             * Read off the eager-loaded relation, not `isTracked()`, which
+             * runs a query per row.
+             */
+            'tracked' => $file->relationLoaded('document') && $file->document
+                ? [
+                    'code' => $file->document->code,
+                    'title' => $file->document->title,
+                    'url' => route('documents.view', ['code' => $file->document->code]),
+                ]
+                : null,
             'created_at' => $file->created_at,
             'updated_at' => $file->updated_at,
             'can' => [
@@ -487,6 +596,15 @@ class FileManagerController extends Controller
                 'move' => $grant->allows(FileAbility::Move),
                 'delete' => $grant->allows(FileAbility::Delete),
                 'share' => $grant->allows(FileAbility::Share),
+                /*
+                 * Asked of FileManager rather than derived from `rename` here,
+                 * so the button and the refusal cannot disagree: replacing a
+                 * tracked document's bytes is the uploader's alone, even for
+                 * somebody holding a manage share on the file. Reads the
+                 * already-eager-loaded `document` relation, so it costs no
+                 * query per row.
+                 */
+                'replace' => $this->manager->mayReplace($user, $file),
             ],
         ];
     }
@@ -579,6 +697,11 @@ class FileManagerController extends Controller
             'public_id' => $file->public_id,
             'owner_public_id' => $file->owner?->public_id,
             'name' => $file->name,
+            // The same rule as the listing: a row is called what its current
+            // version is called. The trash is where somebody is deciding
+            // whether they want a thing back, so showing them the name of a
+            // version it has not held for months is the worst place for it.
+            'display_name' => $file->downloadName(),
             'extension' => $file->extension,
             'mime_type' => $file->mime_type,
             'size' => $file->size_bytes,

@@ -4,6 +4,8 @@ import { createApp, h, nextTick } from 'vue';
 import AppFooter from './components/AppFooter';
 import AppNavbar from './components/AppNavbar';
 import NavigationSkeleton from './components/NavigationSkeleton';
+import ToastStack from './components/ToastStack';
+import './echo';
 import './preferences';
 
 /*
@@ -46,10 +48,15 @@ createInertiaApp({
             // across every visit. A page's own <main> must carry `flex-1` itself,
             // because Inertia pages render <Head> and <main> as sibling roots and
             // Vue cannot fall a class through onto a fragment.
+            // ToastStack sits out here with them, and for a sharper reason: a
+            // toast is usually raised by an action that then navigates, so a
+            // stack inside the page would be unmounted by the very visit
+            // carrying the message it was about to show.
             render: () => h('div', { class: 'flex min-h-screen flex-col' }, [
                 h(AppNavbar),
                 h('div', { class: 'relative flex flex-1 flex-col' }, [h(App, props), h(NavigationSkeleton)]),
                 h(AppFooter),
+                h(ToastStack),
             ]),
         })
             .use(plugin)

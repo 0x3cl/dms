@@ -8,6 +8,7 @@ import IndexControls from '../../components/IndexControls';
 import Pagination from '../../components/Pagination';
 import SearchableSelect from '../../components/SearchableSelect';
 import UserAvatar from '../../components/UserAvatar';
+import RowActions from '../../components/RowActions';
 import { formatTimestamp } from '../../utils/format-date';
 
 /**
@@ -29,7 +30,7 @@ import { formatTimestamp } from '../../utils/format-date';
  */
 export default defineComponent({
     name: 'UsersIndex',
-    components: { AdminShell, Badge, Card, ConfirmActionModal, Head, IndexControls, Link, Pagination, SearchableSelect, UserAvatar },
+    components: { AdminShell, Badge, Card, ConfirmActionModal, Head, IndexControls, Link, Pagination, RowActions, SearchableSelect, UserAvatar },
     props: {
         users: { type: Object, required: true },
         sections: { type: Array, default: () => [] },
@@ -203,15 +204,14 @@ export default defineComponent({
                             </td>
                             <td class="py-3 pr-4"><Badge :tone="roleTone(user)">{{ roleOf(user) }}</Badge></td>
                             <td class="py-3 text-right whitespace-nowrap">
-                                <button type="button" class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold text-slate-600 transition hover:bg-slate-100" @click="viewing = user">
-                                    <i class="fa-solid fa-eye" aria-hidden="true"></i>View
-                                </button>
-                                <Link :href="'/users/' + user.id + '/edit?tab=personal'" class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold text-[#07559e] transition hover:bg-sky-50">
-                                    <i class="fa-solid fa-pen" aria-hidden="true"></i>Edit
-                                </Link>
-                                <button type="button" class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold text-rose-600 transition hover:bg-rose-50" @click="closing = user">
-                                    <i class="fa-solid fa-user-slash" aria-hidden="true"></i>Close
-                                </button>
+                                <RowActions
+                                    :label="'Actions for ' + user.name"
+                                    :actions="[
+                                        { key: 'view', label: 'View details', icon: 'fa-solid fa-eye' },
+                                        { key: 'edit', label: 'Edit', icon: 'fa-solid fa-pen', tone: 'primary', href: '/users/' + user.id + '/edit?tab=personal' },
+                                        { key: 'close', label: 'Close account', icon: 'fa-solid fa-user-slash', tone: 'danger' },
+                                    ]"
+                                    @select="$event.key === 'view' ? (viewing = user) : (closing = user)" />
                             </td>
                         </tr>
                         <tr v-if="!users.data.length">

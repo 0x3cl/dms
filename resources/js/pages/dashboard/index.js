@@ -4,7 +4,7 @@ import AdminShell from '../../components/AdminShell';
 import Card from '../../components/Card';
 import CountUp from '../../components/CountUp';
 import VisibilityBadge from '../../components/VisibilityBadge';
-import { formatDay, formatTimestamp } from '../../utils/format-date';
+import { formatTimestamp } from '../../utils/format-date';
 
 /**
  * The old dashboard was seven Bootstrap tab panes in one Blade file, three of
@@ -35,7 +35,7 @@ export default defineComponent({
             { key: 'open', label: 'Readable office-wide', value: props.stats.open, icon: 'fa-solid fa-globe', tone: 'bg-slate-100 text-slate-600' },
         ]);
 
-        return { code, formatDay, formatTimestamp, tiles, track };
+        return { code, formatTimestamp, tiles, track };
     },
     template: `
     <Head title="Dashboard" />
@@ -47,7 +47,7 @@ export default defineComponent({
                     <span class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-sky-100 text-lg text-[#07559e]"><i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i></span>
                     <span class="min-w-0 flex-1">
                         <span class="block text-sm font-bold uppercase tracking-wide text-slate-800">Upload a document</span>
-                        <span class="block text-xs text-slate-500">Get a tracking code and a QR label.</span>
+                        <span class="block text-xs text-slate-500">Get a tracking code and a QR Tracker.</span>
                     </span>
                     <i class="fa-solid fa-arrow-right text-slate-300 transition group-hover:translate-x-1 group-hover:text-[#00aeef]" aria-hidden="true"></i>
                 </Link>
@@ -93,7 +93,7 @@ export default defineComponent({
                             <Link :href="'/documents/view/' + document.code" class="flex flex-wrap items-center justify-between gap-3 transition hover:text-[#07559e]">
                                 <span class="min-w-0">
                                     <span class="block truncate font-semibold text-slate-800">{{ document.title }}</span>
-                                    <span class="block text-xs text-slate-500">{{ document.code }} · {{ formatDay(document.created_at) }}</span>
+                                    <span class="block text-xs text-slate-500">{{ document.code }} · {{ formatTimestamp(document.created_at) }}</span>
                                 </span>
                                 <VisibilityBadge class="shrink-0" :visibility="document.visibility" />
                             </Link>

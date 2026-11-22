@@ -128,7 +128,29 @@ export default defineComponent({
     </Transition>
     <Transition enter-active-class="transition duration-200 ease-out" enter-from-class="opacity-0 scale-95" enter-to-class="opacity-100 scale-100" leave-active-class="transition duration-150 ease-in" leave-from-class="opacity-100 scale-100" leave-to-class="opacity-0 scale-95">
         <div v-if="open" class="pointer-events-none fixed inset-0 flex items-center justify-center p-4" :class="layerClass" role="dialog" aria-modal="true" aria-labelledby="confirm-action-title">
-            <section class="pointer-events-auto max-h-full w-full overflow-y-auto rounded-3xl bg-white p-7 shadow-2xl sm:p-9" :class="widthClass">
+            <!--
+                Three regions, not one scrolling card.
+
+                The card was a single overflow-y-auto box, so a dialog
+                taller than the viewport scrolled its own title and its own
+                buttons out of sight — in the version history, fourteen
+                entries pushed "Version history" off the top and Done off the
+                bottom, leaving a list with no heading and no way out but
+                Escape. The title says what is being decided and the buttons
+                are how it is decided; both have to be on screen for the whole
+                of the decision.
+
+                So the card is a flex column that is at most the viewport
+                tall, and only the middle scrolls. The padding moves off the
+                card and onto the three regions, because a single p-9 on a
+                scroll container puts its bottom padding below the scroll
+                rather than above the footer.
+
+                Every dialog in the application is built on this component, so
+                this is the one place it has to be true.
+            -->
+            <section class="pointer-events-auto flex max-h-full w-full flex-col overflow-hidden rounded-3xl bg-white shadow-2xl" :class="widthClass">
+                <div class="shrink-0 px-7 pt-7 sm:px-9 sm:pt-9">
                 <div class="flex items-start justify-between gap-4">
                     <div class="flex h-14 w-14 items-center justify-center rounded-full text-2xl" :class="toneClasses.icon">
                         <i :class="icon" aria-hidden="true"></i>
@@ -139,6 +161,12 @@ export default defineComponent({
                 </div>
                 <h2 id="confirm-action-title" class="mt-5 text-2xl font-bold text-slate-900 uppercase tracking-wide">{{ title }}</h2>
                 <p v-if="message" class="mt-2 leading-7 text-slate-600">{{ message }}</p>
+                </div>
+
+                <!-- The only part that scrolls. min-h-0 is what lets it: a
+                     flex child will not shrink below its content without it,
+                     so the card would grow past the viewport instead. -->
+                <div class="min-h-0 flex-1 overflow-y-auto px-7 sm:px-9">
                 <!--
                     At the wider size, this list is two columns. A label/value
                     pair across a 1024px card is a short label, a long gap and a
@@ -181,7 +209,9 @@ export default defineComponent({
                     </table>
                 </div>
                 <div v-if="$slots.default" class="mt-4"><slot /></div>
-                <div class="mt-7 flex flex-wrap justify-end gap-3">
+                </div>
+
+                <div class="shrink-0 flex flex-wrap justify-end gap-3 px-7 pb-7 pt-6 sm:px-9 sm:pb-9">
                     <button v-if="cancelLabel !== null" type="button" class="rounded-lg border border-slate-300 px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50" :disabled="processing" @click="$emit('close')">  {{ cancelLabel }}  </button>
                     <button type="button" class="rounded-lg px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60" :class="toneClasses.button" :disabled="processing || confirmDisabled" @click="$emit('confirm')">  {{ processing ? (progress !== null ? 'Uploading… ' + progress + '%' : 'Please Wait…') : confirmLabel }}  </button>
                 </div>

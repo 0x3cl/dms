@@ -18,11 +18,13 @@ use App\Models\User;
 use App\Services\Files\FileEventRecorder;
 use App\Services\Files\FileStorage;
 use App\Services\Files\FolderService;
+use App\Services\Files\GuestIdentity;
 use App\Services\Files\SharingService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
 /**
@@ -300,8 +302,41 @@ class ActivityTrailTest extends TestCase
         $this->assertSame('download', $row->context['ability']);
     }
 
-    /** Opening a link is recorded, with no actor — nobody is signed in. */
+    /**
+     * Opening a link is recorded with no actor — nobody is signed in — but
+     * with the name the visitor gave, which is the whole reason they are
+     * asked. "Unknown opened this four times" is indistinguishable from four
+     * different people.
+     */
     public function test_opening_a_share_link_is_recorded(): void
+    {
+        $owner = User::factory()->create();
+        $file = $this->fileFor($owner);
+        $link = app(SharingService::class)->createLink($file, ShareAbility::Download, $owner);
+        Auth::logout();
+
+        $identified = $this->post("/s/{$link->token}/identify", ['name' => 'Maria Santos'])
+            ->assertRedirect("/s/{$link->token}");
+
+        $this->withCookies($this->visitorCookie($identified))->get("/s/{$link->token}")->assertOk();
+
+        $row = ActivityLog::query()->where('action', ActivityAction::LinkAccessed)->sole();
+
+        $this->assertNull($row->actor_id);
+        $this->assertSame('System', $row->actor_name);
+        $this->assertSame($owner->name, $row->context['created_by']);
+        // Labelled, never bare: a self-asserted name sitting unqualified
+        // beside a column of real accounts is a claim the trail cannot make.
+        $this->assertSame('Maria Santos (link visitor)', $row->context['visitor']);
+    }
+
+    /**
+     * Until the visitor answers, nothing is recorded and no view is spent.
+     *
+     * A link capped at three opens must not be emptied by a prompt somebody
+     * closed without reading the document.
+     */
+    public function test_an_unidentified_visitor_spends_nothing(): void
     {
         $owner = User::factory()->create();
         $file = $this->fileFor($owner);
@@ -310,11 +345,45 @@ class ActivityTrailTest extends TestCase
 
         $this->get("/s/{$link->token}")->assertOk();
 
-        $row = ActivityLog::query()->where('action', ActivityAction::LinkAccessed)->sole();
+        $this->assertSame(0, ActivityLog::query()->where('action', ActivityAction::LinkAccessed)->count());
+        $this->assertSame(0, $link->fresh()->view_count);
 
-        $this->assertNull($row->actor_id);
-        $this->assertSame('System', $row->actor_name);
-        $this->assertSame($owner->name, $row->context['created_by']);
+        // And the bytes are behind the same question the page is, or the
+        // prompt would be decoration.
+        $this->get("/s/{$link->token}/file")->assertRedirect("/s/{$link->token}");
+    }
+
+    /** Declining still produces a stable handle, not a refusal. */
+    public function test_an_anonymous_visitor_is_still_a_named_one(): void
+    {
+        $owner = User::factory()->create();
+        $file = $this->fileFor($owner);
+        $link = app(SharingService::class)->createLink($file, ShareAbility::Download, $owner);
+        Auth::logout();
+
+        $identified = $this->post("/s/{$link->token}/identify", ['name' => null]);
+        $this->withCookies($this->visitorCookie($identified))->get("/s/{$link->token}")->assertOk();
+
+        $visitor = (string) ActivityLog::query()->where('action', ActivityAction::LinkAccessed)->sole()->context['visitor'];
+
+        $this->assertStringStartsWith('Anonymous ', $visitor);
+        $this->assertStringEndsWith(' (link visitor)', $visitor);
+    }
+
+    /**
+     * The visitor cookie, ready to send back on the next request.
+     *
+     * The test client does not carry cookies from one request to the next the
+     * way a browser does. It *does* encrypt whatever is handed to
+     * `withCookies()`, so the value is taken decrypted off the response —
+     * passing the ciphertext back encrypts it twice and the middleware then
+     * hands the application a string it cannot read.
+     *
+     * @return array<string, string>
+     */
+    private function visitorCookie(TestResponse $response): array
+    {
+        return [GuestIdentity::COOKIE => $response->getCookie(GuestIdentity::COOKIE)->getValue()];
     }
 
     // ---------------------------------------------------------------- the page

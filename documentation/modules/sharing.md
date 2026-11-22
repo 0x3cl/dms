@@ -87,7 +87,29 @@ Sharing an item with its own owner is refused — they already hold everything, 
 
 `share_links` — a 64-character CSPRNG token, an ability, and three independent ways to be spent: revoked by hand, past `expires_at`, or out of `max_views`. **All three are checked on every redemption.**
 
-> **A link never grants write and never grants manage.** The holder of the URL is the audience. `SharingService::createLink()` refuses anything but view or download, and the resolver narrows the grant again on redemption, so a row holding `manage` — however it got there — still cannot grant write.
+> **A link never grants write and never grants manage.** The holder of the URL is the audience. `SharingService::createLink()` refuses anything but restricted, view or download, and the resolver narrows the grant again on redemption, so a row holding `manage` — however it got there — still cannot grant write.
+
+### The term decides whether the URL is a key
+
+`ShareAbility::Restricted` is the third term a link may carry, and it is not a smaller view. It says **the link is an address, not a credential**: `AccessResolver::fromLink()` resolves it to the holder's *own* access, so following it is the same as typing the tracking code. The uploader and the tagged people reach the document with everything their grant allows — download included, which the term itself never carries — and a stranger reaches a page stating the level and nothing else, with the bytes behind it answering 404.
+
+It is the **default for any document restricted to a named list** (`SharingService::defaultLinkAbility()`), which is what keeps the automatic link behind a printed QR label an address: whoever photographs the folder learns the classification and no more.
+
+Widening it to view or download makes the URL a bearer credential **whatever the document's level**. That is the office's decision to make and the reason the term exists — a document restricted to three named colleagues is the ordinary case in which somebody outside the office has to be sent a copy, and the alternative was reclassifying the document as public, which opens it to the whole institute to let one outsider read it. Widening one URL is narrower than that in every direction: it is revocable, re-addressable, capped, expiring and counted, and the recipient list goes on governing every other way in.
+
+> **This replaced a rule read off the document's level.** `ShareLinkController::opensForHolder()` used to ask whether the *document* was restricted; it asks the *link's term* now. The migration `2026_11_21_000002_restrict_links_already_in_circulation` moves every live link on a restricted document onto `restricted`, because leaving them as they were would silently turn URLs already sent — and labels already printed — into bearer credentials, and a link's reach is only ever narrowed after it has been sent.
+
+> **Restricted is a document's term.** A file or folder has no named-reader rule for the link to defer to — its rule is its visibility and its shares, which a link is already the sanctioned way around — so `SharingService::assertLinkable()` refuses it there rather than inventing one.
+
+> **The link's own state still decides first.** A revoked, expired, spent or reclassified link resolves to nothing whatever its term, so "the link no longer works" means one thing rather than two.
+
+### One link, re-addressed
+
+`SharingService::regenerateLink()` mints a new token on the same row, keeping the ability, the expiry and the cap. It is what somebody wants when a URL has travelled further than they meant it to, and it is not revoke-and-create: that leaves the document briefly with no link at all — which a public one's printed label points at — and starts a row whose history is empty.
+
+`view_count` **is** reset, which is the one place this parts company with `updateLink()`, where views are a record rather than a budget. The URL those opens were spent against no longer exists, so carrying the count forward would hand somebody a new link that is already partly used up. What it was goes into the audit row, which is where a count that is no longer true belongs.
+
+It is written to the activity log as `ActivityAction::LinkRegenerated` and to the **document's own** trail as `DocumentAction::LinkRegenerated`, because it ends a hand-off: every copy of the URL stops working, and a reader holding a dead link is entitled to learn why from the document's history. Neither row carries a token, old or new. The stored QR label is redrawn, since the address it encodes has changed.
 
 > **A confidential item can never be linked**, and the check runs at creation *and* on every redemption. An item can be reclassified as confidential after a link has been handed out; the link has to stop working at that moment, not when somebody remembers to revoke it. Reclassifying a *folder above it* has the same effect. Both covered.
 
@@ -112,6 +134,18 @@ It is also the gate on `/files/browse`. `files-browse.read` was a second name fo
 A Word, Excel or PowerPoint file is rendered by Microsoft's Office viewer, which fetches the file itself, so `FilePreview::viewerUrl()` mints a signed URL that works without our session. (A PDF never gets one: the browser renders those, and the Office viewer cannot.) It answers to the **same** rule a share link does — minted only after a grant, expiring in minutes, naming one file, never for a confidential item, and re-checked on every fetch because an item can be reclassified after a URL has been handed out.
 
 It also mints nothing at all when `app.url` names a host the internet cannot resolve, because a frame pointing at `localhost` can only ever stay empty. See `file-manager.md`.
+
+## A link reaches the current version only
+
+`ShareLinkController::stream()` answers **404** to a `version` parameter naming anything but the current one, and the landing page ships no version list — so it does not even disclose that a history exists.
+
+Three reasons, and the second is decisive:
+
+1. A link is a bearer credential minted for a thing at a moment. Its terms are an ability, an expiry and a view cap; none of them says anything about history, so reaching history through it is reach nobody granted.
+2. **Every token already in circulation would have widened silently** the day versioning shipped, including links sent before the feature existed. This module's hardest rule is the opposite — a link's reach is re-evaluated on every redemption and *narrowed* when the item is reclassified, which is why `updateLink()` keeps the token so that narrowing works on a URL already sent.
+3. `AccessResolver::linkCovers()` answers "does this link point at this subject". A version is not a subject the resolver knows, so admitting one would mean either teaching the resolver about versions — a second door — or skipping it, which is worse.
+
+Covered by `test_a_share_link_cannot_reach_an_old_version`.
 
 ## Key files
 

@@ -22,6 +22,9 @@
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="CACHE_STORE" value="array"/>
+        <!-- No websocket in CI: the events still dispatch, so Event::fake
+             assertions hold, but nothing tries to reach a Reverb server. -->
+        <env name="BROADCAST_CONNECTION" value="null"/>
         <!--
             Tests run against their own MySQL database, not in-memory SQLite:
             this app's servers ship pdo_mysql but not pdo_sqlite. Create it once

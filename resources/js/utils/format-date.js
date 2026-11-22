@@ -60,9 +60,15 @@ export function formatTimestamp(value) {
 
 /**
  * Format a serialized timestamp as a readable date without the time
- * (e.g. "Aug 26, 2026") — the right width for a table column. Unlike
- * formatDate above, which expects a date-only string, this takes a full
- * timestamp. Returns an empty string for a missing value.
+ * (e.g. "Aug 26, 2026"). Unlike formatDate above, which expects a date-only
+ * string, this takes a full timestamp. Returns an empty string for a missing
+ * value.
+ *
+ * Nothing calls it any more and it is kept deliberately. It was "the right
+ * width for a table column", and the office asked for the opposite: two
+ * documents filed the same afternoon are ordered by a time the screen was
+ * not showing, so "Nov 21, 2026" twice read as a tie that the list had
+ * already broken. Every display is formatTimestamp now.
  */
 export function formatDay(value) {
     if (!value) return '';

@@ -89,6 +89,12 @@ A role still held by an account is not deleted either — those accounts would b
 
 Registration is self-service with no approval step, so whatever `Staff` carries is what anyone who can reach the sign-up page gets. Treat `Roles::STAFF_PERMISSIONS` as a security boundary, not a convenience list.
 
+## Two modules deliberately do not have the permission you would expect
+
+**`access-requests` has `read` and `create`, and no decide.** Whether somebody may *answer* a request is a per-record question — it is addressed to the document's uploader — so a module checkbox for it would create requests nobody holding it could answer: a dead letter rather than a protection. `PATCH /access-requests/{accessRequest}` therefore carries no `permission:` middleware at all, and the controller checks the document's **live** `user_id` (or SUPERADMIN). Same distinction as `documents.delete` versus `owns()`. See `documentation/modules/access-requests.md`.
+
+**There is no document-type-*groups* module.** A group and a type are one piece of office vocabulary, so `document-types.{read,write,delete}` gate both screens. Two sets of permission names for one grant is how a role ends up holding half of it.
+
 ## Routes
 
 The four CRUD modules are declared action by action rather than through `Route::resource()`: a resource cannot carry per-action middleware, and reading a division is not the same grant as deleting one.

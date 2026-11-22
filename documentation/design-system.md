@@ -16,7 +16,7 @@ The whole visual language lives in **`resources/css/app.css`**. Tailwind 4 is co
 }
 ```
 
-In practice the codebase writes the literal hexes as arbitrary values (`bg-[#00aeef]`, `text-[#07559e]`) because that is what PROCMIS does and what keeps the two diffable. Everything else is stock Tailwind slate/sky/emerald/rose/amber.
+In practice the codebase writes the literal hexes as arbitrary values (`bg-[#00aeef]`, `text-[#07559e]`) because that is what PROCMIS does and what keeps the two diffable. Everything else is stock Tailwind slate/sky/emerald/rose/amber, plus green/orange/red, which are the three access levels and nothing else — a traffic light read without being read.
 
 | Role | Value |
 | --- | --- |
@@ -40,6 +40,19 @@ In practice the codebase writes the literal hexes as arbitrary values (`bg-[#00a
 
 > **Every card, panel, drawer and modal title is `uppercase tracking-wide`.** The only exceptions are the page-title `<h1>` in `AdminShell`'s sticky header and the landing page's hero heading.
 
+## The logo and the icon set
+
+`public/ptri.png` is the DOST-PTRI seal at full resolution (810x706, transparent) and the **only brand image anyone edits**. It is referenced through `resources/js/organization.js` (`logo: '/ptri.png'`), which `AppNavbar` and `auth/login.js` render with `object-contain` — the seal is not square, so a fixed `h-`/`w-` box without `object-contain` distorts it.
+
+Everything a browser asks for in an icon slot is **generated** from that one file by `php artisan brand:icons`: `icon-{16,32,48,180,192,512}.png` and a real multi-size `favicon.ico`. Replacing the seal is therefore one file plus one command, not seven files kept in step by hand. `resources/views/app.blade.php` already points at the generated set.
+
+Two things the command does that are easy to get wrong, and were both wrong here:
+
+- **It letterboxes rather than stretches.** An icon slot is square and the seal is not, so each size is scaled to fit and centred on a transparent square canvas.
+- **It writes a real `favicon.ico`.** A browser requests `/favicon.ico` unprompted whatever the markup says. The file that used to sit there was **zero bytes**, which is worse than absent: an empty body is a broken image, not a fallback. Meanwhile the `<link rel="icon">` pointed at the full 139 KB seal, downloaded on every page load to be drawn at 16 pixels.
+
+GD, not Imagick — the same constraint that decides the QR label format.
+
 ## Base classes
 
 Defined in `@layer base` in `app.css`, so a utility in `@layer utilities` still overrides them:
@@ -50,6 +63,7 @@ Defined in `@layer base` in `app.css`, so a utility in `@layer utilities` still 
 | `.error` | The validation message under a field: `mt-1 text-sm text-rose-600` |
 | `.required-label` | Appends a red `*` via `::after` |
 | `.scroll-shadows` | Inner top/bottom shadows on a scrollable panel, shown only while there is more to scroll (the sidebar) |
+| `.hover-scroll` | One-line heading with an ellipsis that becomes horizontally scrollable on hover or focus — for free text, like a document title, where wrapping would break the layout and truncating alone would hide the page's own subject. Set `title` on the element too: a tooltip is what keyboard and touch readers get. `scrollbar-gutter: stable` keeps the bar's height reserved in both states, or the heading shifts down as the pointer arrives |
 
 ### Control height
 
@@ -75,6 +89,25 @@ Three things make it work:
 
 The preference lives in `localStorage` under `dms.preferences` (`resources/js/preferences.js`), and an inline script in `resources/views/app.blade.php` applies it before first paint so a dark-mode user never sees a flash of light. **That script mirrors the key and the `theme` shape — change one and change the other.** The swap itself is a View Transition, with an instant fallback and a `prefers-reduced-motion` opt-out.
 
+## Layering
+
+Overlays are stacked by hand, and the order is written here because the one time it was not, a toast spent its life behind a scrim. Every value is a Tailwind arbitrary `z-[n]` on a `fixed` element in the root stacking context — none of the wrappers in `app.js` create one of their own, so these numbers really do compete with each other.
+
+| Layer | `z` | What sits here |
+| --- | --- | --- |
+| Page chrome | `z-30` / `z-40` | Sticky headers, drawer scrims |
+| Drawers and ordinary modals | `z-50` | The audit-trail, comments and version slide-overs, `ConfirmDeleteModal`, the default `ConfirmActionModal` |
+| Full-screen preview | `z-[70]` | `FilePreviewModal` |
+| Dialogs opened *from* the preview | `z-[80]` | `ConfirmActionModal` with `layer-class="z-[80]"` — the one case a caller lifts a component by hand, because the same dialog is opened from both depths |
+| Blocking failure | `z-[90]` | `FeedbackModal`, the `error` flash |
+| Toasts | `z-[100]` | `ToastStack` |
+
+Two rules follow from that table and are the reason it exists.
+
+**A global surface is lifted once, at the component, never per caller.** `ToastStack` was `z-[60]` and `FeedbackModal` `z-50`, both *below* the full-screen preview. Neither was broken in any way a test or an error could catch: the toast was raised, announced to a screen reader and timed out on schedule, and the modal opened — they were simply painted underneath the scrim. So posting an empty comment from the preview, copying a link there, or taking a refusal looked exactly like a button that did nothing. `ConfirmActionModal`'s `layer-class` is the deliberate exception and only because that component is opened from two depths; anything mounted once and raised from anywhere must clear the whole ladder by itself, or it is invisible wherever somebody forgets to lift it.
+
+**A transient message may sit over a modal; a modal may never sit over a toast.** That is why `FeedbackModal` stops at `z-[90]`. A toast blocks nothing — its container is `pointer-events-none` and only the toasts themselves take clicks, so the corner it occupies is still clickable through to the dialog underneath.
+
 ## Component inventory
 
 All in `resources/js/components/`, all plain `.js` inline-template components.
@@ -94,8 +127,8 @@ All in `resources/js/components/`, all plain `.js` inline-template components.
 | --- | --- |
 | `Card` | Default slot. `<section class="border border-slate-200 bg-white p-5 shadow-sm sm:p-7">` — square-cornered. Extra classes fall through. |
 | `Button` | `href`, `type`, `variant` (`primary`\|`secondary`\|`danger`); default slot. Renders an Inertia `<Link>` when `href` is set, a native `<button>` otherwise — branched with `v-if`/`v-else` rather than `<component :is>`, because a dynamic string tag can resolve back to this component's own registered name. |
-| `Badge` | `tone` (`slate`\|`sky`\|`emerald`\|`rose`\|`amber`); slot. The uppercase pill. |
-| `VisibilityBadge` | `visibility` — `public`/`private`, with a lock or globe icon. |
+| `Badge` | `tone` (`slate`\|`sky`\|`emerald`\|`rose`\|`amber`\|`green`\|`orange`\|`red`); slot. The uppercase pill. `green`/`orange`/`red` are reserved for the access levels — public, private, confidential — so recolouring a level never recolours an unrelated status pill. |
+| `VisibilityBadge` | `visibility` — `public`, `private` or `confidential`. Tone and icon are derived from the value here, not passed in, so a caller cannot render a level in the wrong colour; they match `FileVisibility::tone()` level for level: public is **green**, private **orange**, confidential **red**. An unrecognised value falls back to the **most restrictive** appearance — a badge that defaults to "Public" on a value it does not know will eventually describe a restricted document as open. |
 | `CountUp` | `value`, `format`, `duration`. Animated number, reduced-motion aware. |
 | `ToggleSwitch` | `modelValue`, `label`, `disabled`; emits `update:modelValue`. |
 | `UserAvatar` | `person` (`{name, profile_image, avatar_seed}`), or the older `name`/`image`/`seed` separately. The uploaded photo, else a generated avatar (`resources/js/avatar.js`), else initials. **Initials are the last resort, not the default** — a generated image is a third-party request, so `@error` falls back, and the watcher resets that fallback when the person changes or one failure strands every later avatar in a list. |
@@ -113,11 +146,13 @@ All in `resources/js/components/`, all plain `.js` inline-template components.
 | Component | API |
 | --- | --- |
 | `ConfirmActionModal` | `open`, `title` (required), `message`, `details`, `icon`, `tone` (`primary`\|`danger`), `cancelLabel`, `confirmLabel`, `confirmDisabled`, `processing`, `progress`, `wide`, `wider`; emits `close`, `confirm`; default slot for extra body content. Three widths: `max-w-xl` by default, `wide` → `max-w-3xl` for a long `details` list, `wider` → `max-w-5xl` when the body is a **layout** rather than a message (the filter dialog's grid of selects, the destination picker's folder list, the Users View dialog). At `wider` the `details` list also becomes two columns, because a label/value pair across 1024px is a short label, a long gap and a short value. Prefer the narrow card — a dialog as wide as the page reads as a screen. The workhorse: every destructive action and every form submit goes through one. **Its X emits `close`, never submit.** |
-| `FeedbackModal` | `open`, `title` (required), `message` (required), `tone`, `icon`, `closeLabel`, `actionHref`/`actionLabel`; emits `close`. This is the flash-message mechanism — there is no toast component. |
+| `FeedbackModal` | `open`, `title` (required), `message` (required), `tone`, `icon`, `closeLabel`, `actionHref`/`actionLabel`; emits `close`. Answers `flash.error` only: a refusal has to block, because one the reader scrolls past is one they will act as though never happened. |
+| `ToastStack` | No props. Mounted once in `app.js`, outside the Inertia page. Answers `flash.success`, and exports `pushToast({ message, title, tone, timeout })` / `dismissToast(id)` for outcomes that never reach a flash. Top-right, stacking, dismissable, auto-expiring (longer for an error), capped at four. **A single-field form says its complaint here rather than under the field** — the control's own red ring already says *which* control, a message says only *what*, and a reserved line of height beneath one input is empty almost all of the time. That holds only while there is one control: a form with several fields keeps its per-field messages, because a toast cannot say which field it means. The ring outlives the toast, since the toast expires and the input is still wrong. |
 | `SearchableSelect` | `modelValue`, `options` (`{value, label, icon?}[]`), `placeholder`, `searchPlaceholder`, `emptyText`, `disabled`, `invalid`; emits `update:modelValue`. Keyboard: type to filter, ↑/↓, Enter, Escape. |
-| `NotificationBell` | No props — reads the shared `notifications` prop. |
+| `NotificationBell` | No props — reads the shared `notifications` prop. Each row is the actor's face with the kind badged on it (the trail's shape), the actor's name and kind label above the sentence, the sentence clamped to two lines with the full text as a tooltip, and an unread dot; the panel is `min(26rem, 100vw-2rem)` and the list scrolls. Icon, colour and label come from `App\Enums\NotificationKind` on the server, never from a list of kinds in the template. |
 | `ThemeToggle` | No props. Writes `preferences.theme`. |
-| `QrScanner` | No props; emits `scanned(text)`, `error`. Wraps `html5-qrcode` and **stops the camera in `onBeforeUnmount`** — the reason it is a component at all. |
+| `QrScanner` | `mode` (`camera`\|`file`); emits `scanned(text)`, `error`. Wraps `html5-qrcode` and **stops the camera in `onBeforeUnmount`** — the reason it is a component at all. A camera that will not start is written below the control, because it is a *condition* that is still true in ten seconds; a file that could not be read raises a toast, because it is an *attempt* that is over. |
+| `RowActions` | `actions` (`{key, label, icon, href?, tone?, disabled?}[]`), `label`; emits `select(action)`. **Every index table's Actions column.** Icon-only: each button carries `title` (the hover tooltip) *and* `aria-label` (what a screen reader announces) — dropping the text without both makes the row unreadable to anyone not using a mouse. An entry with `href` renders a `<Link>`, otherwise a `<button>` that emits. Tones: `primary`, `default`, `danger`. Actions are data, not slots, so no table can invent a fourth button style. The known cost: a touch device has no hover, so an unusual action should keep a visible label rather than be squeezed in here. |
 | `ActionMenu` | `items` (`{key, label, icon, hint, tone, disabled}[]`), `label`, `align`; emits `select(item)`. The kebab menu; items are data, not slots, so every caller gets the same target size. |
 | `FilePreviewModal` | `open`, `file` — **the server's descriptor** from `GET /files/preview` (`{mode, name, src, viewer_url, viewer_unreachable, renders_locally, download_url, can_download}`), null while it is in flight — `hasPrevious`, `hasNext`; emits `close`, `navigate(step)`. Five modes: `document` (a PDF from our own stream, or Word/Excel/PowerPoint through Microsoft's Office viewer) in an iframe, `image`, `video`, `audio`, and `none`. **The page never picks the mode** — see `documentation/modules/file-manager.md`. The fullscreen preview. **The only overlay in this system that traps focus, closes on Escape and the scrim, and locks body scroll** — the other three do none of those, so copy from this one, not from them. `h-[100dvh]`, not `h-screen`. |
 | `FolderPickerModal` | `open`, `action` (`move`\|`copy`), `items` (`{kind, public_id, name}[]`), `processing`, `error`; emits `close`, `confirm(targetPublicId)`. Walks `GET /files/destinations` — one flat request, not one per level — already narrowed server-side to folders the person may write into. Excludes the items being moved and everything inside them. **Do not name a setup binding `open`**: it shadows the `open` prop and the modal receives a function. |
@@ -125,22 +160,38 @@ All in `resources/js/components/`, all plain `.js` inline-template components.
 | `ConfirmDeleteModal` | `open`, `purpose` (`delete`\|`purge`), `items`, `trashed`, `processing`, `error`; emits `close`, `confirm(typedCode)`. Fetches a **server-issued** four-digit code and a count of what the delete would take. The code is verified server-side; never reimplement it in the browser. |
 | `LoadingFrame` | `src`, `title`. An `<iframe>` with a loading state, re-shown whenever `src` changes. Ported from PROCMIS. Size it with classes on the component. |
 | `ShareDrawer` | `open`, `item` (`{kind, public_id, name}`); emits `close`. The slide-in sharing panel — **links only**, plus a read-only list of who holds access, with revoke. People are named where the item is created. **The only extracted drawer** — the other off-canvas panel is baked into `AdminShell`'s mobile sidebar. Fetches its own state on open rather than taking page props. |
+| `LoadingModal` | `open`, `title`, `message`. The blocking "please wait" card for a submit that cannot be cancelled. |
+| `TrailFilters` | `open`, `filters` (required), `actions`, `offices`, `sizes`; emits `close`, `apply`. The **one** filter dialog shared by the document page's trail panel and the full-history page — search, action, office, date range, page size. Five controls that each reload the page is five reloads to describe one question, so it holds a draft and applies on confirm. Search stays *outside* it, because it is the one people actually use. |
+| `TrailVersionTabs` | `tabs` (`[{version, entries}]`), `current`; emits `select`. The trail read one file version at a time — `All versions (n)` plus a tab per version the history holds, the unversioned rows last. Shared by the trail panel and the full-history page. It **is** the version filter, so the select left `TrailFilters` when it arrived, and it renders nothing at all until a file has been replaced: one version is not a choice. |
+| `AccessRequestsMenu` | No props — reads `accessRequests.pending` for the badge and **fetches** its three tabs from `/access-requests` when opened. Incoming leads, because it is the only tab with an action attached. |
+| `TrackDocumentCard` | `code`, `notFound`, `heading`; emits `found`. Type a tracking code or scan a label — one card wrapping `QrScanner`, which is why Scan QR Code is not its own screen. |
+| `RecipientPicker` | `modelValue` (ids), `people`, `invalid`, `addLabel`, `emptyText`, `searchPlaceholder`; emits `update:modelValue`. Naming people **where the thing is made**: the upload form, the document **edit** form (private and confidential only) and the New folder dialog. There is still no "add someone later" *panel* — the list is corrected on the form that made it, which is where the whole list is visible at once. |
+| `CollapseTransition` | Default slot. The height transition used by expanders; wraps `<Transition>` so no page hand-rolls one. |
+| `TutorialMenu` | No props. Filters the tour registry against `auth.permissions`, so nobody is offered a walkthrough of a page they cannot open. |
 
 ### Files
 
 | Component | API |
 | --- | --- |
 | `ViewToggle` | `modelValue` (`grid`\|`table`); emits `update:modelValue`. Two icon buttons, pinned `h-[42px]` to line up with `IndexControls`. Drive it from the query string, never local state. |
-| `FileGrid` | `folders`, `files`, `folderHref` (fn), `selected`, `selectable`, `mode` (`browse`\|`trash`); emits `open`, `preview`, `act`. The thumbnail view. `mode="trash"` swaps the action list for Restore / Delete permanently, which is what gives the Trash page both views for free. |
+| `FileGrid` | `folders`, `files`, `folderHref` (fn), `selected`, `selectable`, `mode` (`browse`\|`trash`); emits `open`, `preview`, `act`, `prefetch` (a hover/focus hint, so the preview descriptor is already in hand when the click lands). The thumbnail view. `mode="trash"` swaps the action list for Restore / Delete permanently, which is what gives the Trash page both views for free. |
 | `FileTable` | the same, plus `sort`/`direction`; emits `sort(column)` as well. The table view with sortable headers. |
 | `utils/file-rows.js` | Not a component: `readableSize`, `accessBadge`, `rowActions(item, kind, mode)`. Both views import it, because a byte formatter and a thirteen-line action list duplicated across two bodies is exactly the pair that drifts — an action added to one view and not the other is invisible until somebody switches. |
+| `UploadLimitsHint` | `limits` — the `UploadPolicy::limits()` payload verbatim. Renders what a file input accepts: the extensions grouped **by ceiling** (a dozen rows each saying "25 MB" is one sentence twelve times), the file count, and an expander for the full list. Used by both upload surfaces, because the one statement that must not drift between them is what is permitted. A page must never restate the limits as literals — the document picker's `accept=".pdf,.doc,.docx"` outlived its policy and hid every permitted spreadsheet from the browser's own dialog. |
 | `FileIcon` | `mimeType`, `folder`, `size` (`sm`\|`lg`). The MIME-keyed tile shown when there is no thumbnail — which is every non-image, because these servers have no Imagick. |
 | `FileBreadcrumbs` | `rootLabel`, `rootHref`, `crumbs`. The root is never shown by its stored name (`root-{id}`). |
+| `FileVersionsModal` | `open`, `item` (`{public_id, owner_public_id, name}`); emits `close`, `reverted`. A file's history, **fetched when it opens** — each entry carries URLs that open bytes. View and Download are plain `<a href>` (file responses); Restore is confirmed in a second dialog, because it changes what the next person downloads. `can_download` and `can_revert` arrive resolved once for the file, never per entry. |
+| `ReplaceFileModal` | `open`, `item` (`{public_id, name, version}`), `limits`; emits `close`, `replaced`. New bytes behind an existing file, with an optional "what changed?" note. `accept` comes from `UploadPolicy::limits()`, never a literal. The message says what a replacement keeps — the name, the link, the shares — so nobody reaches for it wanting a separate file. |
+| `FilePreviewPane` | `file` — the server's descriptor, or null while it is being fetched. **The one preview renderer**: five modes (`document`, `image`, `video`, `audio`, `none`). `FilePreviewModal` keeps only what is *modal* about a preview (scrim, focus trap, Escape, arrows) and delegates the rendering here, and the document page renders it inline under the details card. It decides nothing — the server says which viewer, because a template choosing between a renderer we run and a URL we hand to Microsoft is a template deciding whether a confidential document leaves the building. |
+| `OfficeRenderer` | `src`, `renderer` (required), `name`, `size`, `download-url`. Draws Word via `docx-preview` and Excel/CSV via SheetJS **in the browser**, from our own stream. A spreadsheet's cells are read as data and drawn by text interpolation, never inserted as markup. `size` is what the **large-file gate** decides on — past the limit it states the size and offers Download or "Preview anyway" rather than starting a render that costs the tab — and the work is bounded below it too: one sheet and one 300-row window at a time, with a real download percentage. |
 
 ### Composables
 
 - `useConfirmSubmit(submit)` → `{ confirm, request, cancel, proceed }`. Wire `@submit.prevent="request"` on the form and `@confirm="proceed"` on the modal.
 - `useUrlTab(param, allowed, fallback)` → a ref. Writes with `history.replaceState`, not an Inertia visit; keeps the default value out of the URL. **Each tab set names its own query parameter.**
+- `useLiveTrail(channel, { prop, isLive })` → `{ pending, refresh }`. What a page does with a broadcast trail **signal**: reload that prop on page one unfiltered, otherwise count and offer a pill. Coalesces a burst, does nothing while the tab is hidden, unsubscribes on unmount. See `documentation/modules/realtime.md`.
+- `usePreviewDescriptor()` → `{ describe, descriptor, forget, loading, prefetch }`. The one fetch of `GET /files/preview`, with a short in-memory cache (held well inside a signed viewer URL's own lifetime, so a cached descriptor can never hand out an expired one), in-flight de-duplication, and a read-ahead of the immediate neighbours only — prefetching a whole folder would mint forty live credentials.
+- `useCloseOnTutorial(close)` — dismiss an overlay when a tour starts, so a modal does not sit over the step it is explaining.
 
 ## Page recipes
 

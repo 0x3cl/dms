@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Http\Controllers\NotificationController;
+use App\Models\AccessRequest;
 use Illuminate\Http\Request;
 use Inertia\Middleware;
 
@@ -68,6 +69,26 @@ class HandleInertiaRequests extends Middleware
                 'permissions' => $user ? $user->getAllPermissions()->pluck('name')->all() : [],
             ],
             // The header bell. Lazy so a page that never renders it pays nothing.
+            /*
+             * A document somebody was just refused, so the error modal can
+             * offer to ask for it.
+             *
+             * A sibling prop, **not** a third flash key: `success` and `error`
+             * being the only two is a rule, and this is not a message. It
+             * carries the code alone — the title would disclose the subject of
+             * a document to somebody who was just told they may not read it.
+             */
+            'accessRequest' => fn (): ?array => $request->session()->get('access_request'),
+            /*
+             * Just the count, so the header badge is right before anybody
+             * clicks. The rows themselves are fetched by the modal — a
+             * worklist opened occasionally should not ride on every page.
+             */
+            'accessRequests' => fn (): array => [
+                'pending' => $request->user()
+                    ? AccessRequest::query()->where('owner_id', $request->user()->id)->pending()->count()
+                    : 0,
+            ],
             'notifications' => fn (): ?array => $user
                 ? NotificationController::feedFor($user)
                 : null,

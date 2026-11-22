@@ -62,7 +62,21 @@ class ShareController extends Controller
         $this->assertCanShare($request, $item);
 
         return response()->json([
-            'shares' => $item->shares()->with(['user:id,name', 'division:id,name', 'section:id,name'])->get()
+            /*
+             * Live grants only, matching how links are listed two lines below.
+             *
+             * This used to return every row including revoked ones, so a
+             * withdrawn grant stayed on the panel wearing a "No longer active"
+             * badge *and* a working Revoke button — pressing it re-revoked,
+             * bumped `revoked_at` and wrote a second audit row about something
+             * that had already happened. The two halves of one panel behaved
+             * differently for no reason anybody could see.
+             *
+             * The rows are marked, never deleted, so the history of who was
+             * given what survives in `item_shares`; this is about what the
+             * panel offers to act on.
+             */
+            'shares' => $item->shares()->active()->with(['user:id,name', 'division:id,name', 'section:id,name'])->get()
                 ->map(fn (ItemShare $share) => [
                     'id' => $share->id,
                     'grantee_type' => $share->grantee_type->value,
@@ -92,7 +106,15 @@ class ShareController extends Controller
                 'value' => $ability->value,
                 'label' => $ability->label(),
                 'description' => $ability->description(),
-                'linkable' => in_array($ability, ShareAbility::linkable(), true),
+                /*
+                 * `restricted` is a document's term — it means "defer to the
+                 * subject's own rule about who may read this", and a file's
+                 * own rule is the visibility and the shares a link already
+                 * exists to go around. Offering it here would offer a term
+                 * SharingService refuses.
+                 */
+                'linkable' => in_array($ability, ShareAbility::linkable(), true)
+                    && ! $ability->documentOnly(),
             ], ShareAbility::cases()),
         ]);
     }
@@ -128,15 +150,62 @@ class ShareController extends Controller
             return back()->with('error', 'A confidential item cannot be shared through a link.');
         }
 
+        // One live link per item. The drawer offers Change rather than a
+        // second New when there is one, so arriving here with one already is
+        // a stale panel — say so instead of minting a rival credential.
+        if ($this->sharing->activeLinkFor($item) !== null) {
+            return back()->with('error', 'This item already has a share link. Change or revoke that one.');
+        }
+
         $link = $this->sharing->createLink(
             $item,
             ShareAbility::from($validated['ability']),
             $request->user(),
-            $validated['expires_at'] ? new \DateTimeImmutable($validated['expires_at']) : null,
+            // `?? null`, not `$validated['expires_at']`: a `nullable` field
+            // that was not posted at all is **absent** from the validated
+            // array rather than null, so the direct read is an undefined-key
+            // error — a 500 on the ordinary path of creating a link with no
+            // expiry.
+            isset($validated['expires_at']) ? new \DateTimeImmutable($validated['expires_at']) : null,
             $validated['max_views'] ?? null,
         );
 
         return back()->with('success', 'Share link created: '.$link->url());
+    }
+
+    /**
+     * Change a link's terms without changing its URL.
+     *
+     * The alternative — revoke and create another — quietly breaks every
+     * message the old URL was pasted into, which is the opposite of what
+     * somebody narrowing a link from download to view is asking for.
+     */
+    public function updateLink(Request $request, ShareLink $link): RedirectResponse
+    {
+        $this->assertCanShare($request, $link->shareable);
+
+        $validated = $request->validate([
+            'ability' => ['required', Rule::in(['view', 'download'])],
+            'expires_at' => ['nullable', 'date', 'after:now'],
+            'max_views' => ['nullable', 'integer', 'min:1', 'max:10000'],
+        ]);
+
+        // Re-checked, not assumed from when the link was minted: an item can
+        // be reclassified afterwards, and widening a link on something that
+        // is now confidential must not be the way back in.
+        if ($link->shareable && ! $this->access->effectiveVisibility($link->shareable)->linkable()) {
+            return back()->with('error', 'A confidential item cannot be shared through a link.');
+        }
+
+        $this->sharing->updateLink(
+            $link,
+            ShareAbility::from($validated['ability']),
+            $request->user(),
+            isset($validated['expires_at']) ? new \DateTimeImmutable($validated['expires_at']) : null,
+            $validated['max_views'] ?? null,
+        );
+
+        return back()->with('success', 'Share link updated.');
     }
 
     public function destroyLink(Request $request, ShareLink $link): RedirectResponse
@@ -148,6 +217,17 @@ class ShareController extends Controller
         return back()->with('success', 'Link revoked.');
     }
 
+    /**
+     * May this person change who can reach this item?
+     *
+     * `$item` is resolved through a `morphTo()` that has **no** soft-delete
+     * scope of its own, so for a trashed file or folder it used to arrive here
+     * as null and every revoke was refused with "You cannot share that." —
+     * precisely when somebody most wants to take access away, having just
+     * thrown the thing in the bin. The subject is read `withTrashed()` by the
+     * callers now; this only has to keep failing closed on a genuinely absent
+     * one.
+     */
     private function assertCanShare(Request $request, File|Folder|null $item): void
     {
         if (! $item || ! $this->access->allows($request->user(), $item, FileAbility::Share)) {

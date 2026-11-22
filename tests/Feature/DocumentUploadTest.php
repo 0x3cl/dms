@@ -3,11 +3,13 @@
 namespace Tests\Feature;
 
 use App\Enums\DocumentAction;
+use App\Enums\DocumentVisibility;
 use App\Models\Document;
 use App\Models\DocumentDownload;
 use App\Models\DocumentSeries;
 use App\Models\DocumentType;
 use App\Models\User;
+use App\Services\Documents\QrLabelService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
@@ -33,6 +35,63 @@ class DocumentUploadTest extends TestCase
         return DocumentType::query()->where('code', $code)->value('id');
     }
 
+    /**
+     * Every level but confidential is minted a link, so the label has one
+     * shape.
+     *
+     * This briefly withheld the link from a private document, because an
+     * automatic link printed on a folder was a bearer credential nobody had
+     * asked for. That is no longer what a link to a restricted document is:
+     * `/s/{token}` resolves the holder's own access, so a private label opens
+     * for the people tagged on it and states the classification to anybody
+     * else. With the credential gone, the reason to withhold it went too.
+     *
+     * Confidential keeps none, which is the level's whole definition.
+     */
+    public function test_every_level_but_confidential_is_given_a_link_automatically(): void
+    {
+        $labels = app(QrLabelService::class);
+
+        foreach (['public' => true, 'private' => true, 'confidential' => false] as $visibility => $expected) {
+            $user = User::factory()->create();
+            $tagged = User::factory()->create();
+
+            $this->actingAs($user)->post('/documents', [
+                'title' => "A {$visibility} memo",
+                'document_type_id' => $this->typeId('MEMO'),
+                'visibility' => $visibility,
+                // The restricted levels are a named list, so they are filed
+                // the way the form files them.
+                'recipients' => $visibility === 'public' ? [] : [$tagged->id],
+                'file' => UploadedFile::fake()->create('memo.pdf', 16, 'application/pdf'),
+            ])->assertSessionHasNoErrors()->assertRedirect();
+
+            $document = Document::query()->latest('id')->sole();
+            $link = $document->shareLinks()->whereNull('revoked_at')->first();
+
+            $this->assertSame(
+                $expected,
+                $link !== null,
+                "A {$visibility} upload should ".($expected ? 'be given' : 'not be given').' a link automatically.',
+            );
+
+            /*
+             * And the label follows it. A document with no link carries the
+             * tracking URL, which asks a scanner to sign in — the whole
+             * point of withholding the link.
+             */
+            $this->assertSame(
+                $expected
+                    ? $link->url()
+                    : $labels->trackingUrl($document->code),
+                $labels->targetFor($document),
+                "A {$visibility} document's label points at the wrong thing.",
+            );
+
+            $document->forceDelete();
+        }
+    }
+
     public function test_uploading_a_document_issues_a_tracking_code_and_a_label(): void
     {
         $user = User::factory()->create();
@@ -47,10 +106,18 @@ class DocumentUploadTest extends TestCase
         $document = Document::sole();
 
         $this->assertStringStartsWith('MEMO-', $document->code);
-        $this->assertSame("{$document->code}.svg", $document->qr_code_path);
+        // PNG now, with the seal embedded: endroid/qr-code renders through
+        // GD, where simple-qrcode needed the Imagick backend these servers
+        // do not have. Rows written before the switch keep their .svg names.
+        $this->assertSame("{$document->code}.png", $document->qr_code_path);
         // The type's name is snapshotted beside the foreign key, so renaming
-        // the type cannot rewrite what this document was filed as.
-        $this->assertSame('Memo', $document->type);
+        // the type cannot rewrite what this document was filed as. Read off
+        // the type rather than spelled out, because what the office calls a
+        // type is office business — the snapshotting is what is under test.
+        $this->assertSame(
+            DocumentType::query()->where('code', 'MEMO')->value('name'),
+            $document->type,
+        );
         $this->assertSame($user->name, $document->uploader_name);
         $this->assertSame('memo.pdf', $document->file_name);
     }
@@ -157,14 +224,117 @@ class DocumentUploadTest extends TestCase
         $this->assertSame("{$prefix}-0418", Document::query()->latest('id')->value('code'));
     }
 
-    public function test_a_private_upload_requires_recipients(): void
+    /**
+     * The register tells the page whether a link may exist, rather than
+     * leaving a template to work it out from the level's name.
+     */
+    public function test_the_register_says_whether_each_document_can_be_linked(): void
     {
-        $this->actingAs(User::factory()->create())->post('/documents', [
+        $user = User::factory()->create();
+
+        foreach (['public' => true, 'private' => true, 'confidential' => false] as $level => $expected) {
+            $document = Document::factory()->create([
+                'user_id' => $user->id,
+                'visibility' => $level,
+            ]);
+
+            $this->assertSame(
+                $expected,
+                $document->linkable,
+                "A {$level} document reported the wrong linkability.",
+            );
+            $this->assertArrayHasKey('linkable', $document->toArray());
+        }
+    }
+
+    /**
+     * A confidential upload may name nobody, which is the levels agreeing
+     * rather than confidential being relaxed.
+     *
+     * It was refused, on the reasoning that a confidential document has no
+     * door but its recipient list, so an empty one is filed where nobody can
+     * act on it. The document was read right and the conclusion was wrong:
+     * filing something before you know who it goes to is ordinary office
+     * work, and the refusal did not produce a tagged document — it produced
+     * an *arbitrarily* tagged one, because the way past the form was to name
+     * whoever came to mind. A tag somebody has to notice and undo is worse
+     * than an empty list, which is just a document waiting to be addressed.
+     *
+     * What the level means is unchanged: still no link, ever, and still the
+     * uploader plus the tagged list. The list simply starts empty, and
+     * tagging somebody is an edit.
+     */
+    public function test_a_confidential_upload_may_name_nobody(): void
+    {
+        $uploader = User::factory()->create();
+
+        $this->actingAs($uploader)->post('/documents', [
             'title' => 'Case File',
             'document_type_id' => $this->typeId('CONFID'),
-            'visibility' => 'private',
+            'visibility' => 'confidential',
             'file' => UploadedFile::fake()->create('case.pdf', 16, 'application/pdf'),
-        ])->assertSessionHasErrors('recipients');
+        ])->assertSessionHasNoErrors();
+
+        $document = Document::sole();
+
+        $this->assertSame(DocumentVisibility::Confidential, $document->visibility);
+        $this->assertCount(0, $document->recipients);
+
+        // And it is still confidential: no link was minted with it, and none
+        // can be.
+        $this->assertSame(0, $document->shareLinks()->count());
+        $this->actingAs($uploader)
+            ->post("/documents/{$document->id}/share-links", ['ability' => 'view'])
+            ->assertSessionHas('error');
+
+        // Readable by its uploader, and by nobody else.
+        $this->actingAs(User::factory()->create())
+            ->get("/documents/view/{$document->code}")
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('documents/restricted', false));
+    }
+
+    /**
+     * Private is the other one, and the difference is the link.
+     * "Restricted, and I will decide who later" is a real thing to want;
+     * refusing the upload until a name was typed made the office tag somebody
+     * arbitrarily just to get past the form.
+     */
+    public function test_a_private_upload_may_name_nobody(): void
+    {
+        $uploader = User::factory()->create();
+
+        $this->actingAs($uploader)->post('/documents', [
+            'title' => 'Draft Policy',
+            'document_type_id' => $this->typeId('MEMO'),
+            'visibility' => 'private',
+            'file' => UploadedFile::fake()->create('draft.pdf', 16, 'application/pdf'),
+        ])->assertSessionHasNoErrors();
+
+        $document = Document::sole();
+
+        $this->assertSame(DocumentVisibility::Private, $document->visibility);
+        $this->assertCount(0, $document->recipients);
+    }
+
+    /** And it is readable by its uploader and nobody else. */
+    public function test_an_untagged_private_document_is_readable_only_by_its_uploader(): void
+    {
+        $uploader = User::factory()->create();
+
+        $this->actingAs($uploader)->post('/documents', [
+            'title' => 'Draft Policy',
+            'document_type_id' => $this->typeId('MEMO'),
+            'visibility' => 'private',
+            'file' => UploadedFile::fake()->create('draft.pdf', 16, 'application/pdf'),
+        ]);
+
+        $code = Document::sole()->code;
+
+        $this->actingAs($uploader)->get("/documents/view/{$code}")->assertOk();
+        $this->actingAs(User::factory()->create())->get("/documents/view/{$code}")
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('documents/restricted', false));
     }
 
     /**
@@ -316,5 +486,168 @@ class DocumentUploadTest extends TestCase
 
         $this->assertIsString($props['qrCodeSvg']);
         $this->assertStringContainsString('<svg', $props['qrCodeSvg']);
+    }
+
+    // ------------------------------------------ editing who it is shared with
+
+    /**
+     * A private document filed with one reader, returned so each test can
+     * change who it is for.
+     *
+     * @return array{Document, User, User, User} document, uploader, tagged, untagged
+     */
+    private function restricted(string $level = 'private'): array
+    {
+        $uploader = User::factory()->superadmin()->create();
+        $tagged = User::factory()->create();
+        $other = User::factory()->create();
+
+        $this->actingAs($uploader)->post('/documents', [
+            'title' => 'Case File',
+            'document_type_id' => $this->typeId('MEMO'),
+            'visibility' => $level,
+            'file' => UploadedFile::fake()->create('case.pdf', 16, 'application/pdf'),
+            'recipients' => [$tagged->id],
+        ])->assertSessionHasNoErrors();
+
+        return [Document::query()->latest('id')->firstOrFail(), $uploader, $tagged, $other];
+    }
+
+    private function save(User $uploader, Document $document, array $overrides = [])
+    {
+        return $this->actingAs($uploader)->put("/documents/{$document->id}", [
+            'title' => $document->title,
+            'document_type_id' => $document->document_type_id,
+            'comments_enabled' => $document->comments_enabled,
+            ...$overrides,
+        ]);
+    }
+
+    /**
+     * The edit form carries the picker and the live list.
+     *
+     * It used to ship `users => []`, which is what made tagging a decision
+     * taken once at upload: a document filed before anybody knew who it was
+     * for could never be addressed afterwards.
+     */
+    public function test_the_edit_form_offers_the_picker_and_the_current_recipients(): void
+    {
+        [$document, $uploader, $tagged] = $this->restricted();
+
+        $props = $this->actingAs($uploader)->get("/documents/{$document->id}/edit")
+            ->assertOk()
+            ->viewData('page')['props'];
+
+        $this->assertSame([$tagged->id], $props['recipients']);
+        $this->assertNotEmpty($props['users'], 'the edit form must offer somebody to tag');
+    }
+
+    /** Tagging somebody on an existing document gives them the document. */
+    public function test_a_recipient_added_on_the_edit_form_can_open_the_document(): void
+    {
+        [$document, $uploader, $tagged, $other] = $this->restricted();
+
+        $this->assertSame(
+            'documents/restricted',
+            $this->actingAs($other)->get("/documents/view/{$document->code}")->viewData('page')['component'],
+        );
+
+        $this->save($uploader, $document, ['recipients' => [$tagged->id, $other->id]])
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame(
+            'documents/show',
+            $this->actingAs($other)->get("/documents/view/{$document->code}")->viewData('page')['component'],
+            'a person tagged on the edit form must be able to open the document',
+        );
+    }
+
+    /**
+     * Taking somebody off here is the same act as the chip's remove button:
+     * the row is stamped rather than deleted, so the refusal can still tell a
+     * removed viewer from somebody never tagged.
+     */
+    public function test_a_recipient_dropped_on_the_edit_form_is_revoked_not_deleted(): void
+    {
+        [$document, $uploader, $tagged] = $this->restricted();
+
+        $this->save($uploader, $document, ['recipients' => []])->assertSessionHasNoErrors();
+
+        $this->assertFalse($document->recipients()->whereKey($tagged->id)->exists());
+        $this->assertTrue($document->allRecipients()->whereKey($tagged->id)->exists());
+        $this->assertTrue($document->fresh()->wasRemovedAsViewer($tagged));
+    }
+
+    /** Both halves are on the document's own trail, one row per person. */
+    public function test_adding_and_removing_a_viewer_are_recorded_on_the_trail(): void
+    {
+        [$document, $uploader, $tagged, $other] = $this->restricted();
+
+        $this->save($uploader, $document, ['recipients' => [$other->id]])->assertSessionHasNoErrors();
+
+        $added = $document->logs()->where('action', DocumentAction::ViewerAdded->value)->get();
+        $removed = $document->logs()->where('action', DocumentAction::ViewerRemoved->value)->get();
+
+        $this->assertCount(1, $added);
+        $this->assertCount(1, $removed);
+        $this->assertStringContainsString($other->name, $added->first()->remarks);
+        $this->assertStringContainsString($tagged->name, $removed->first()->remarks);
+    }
+
+    /**
+     * A save that changes nothing about the list touches nobody.
+     *
+     * The diff is the point: a sync would re-stamp `notified_at` and
+     * re-notify everybody tagged every time a title was corrected.
+     */
+    public function test_saving_an_unrelated_edit_does_not_re_tag_anybody(): void
+    {
+        [$document, $uploader, $tagged] = $this->restricted();
+
+        $this->save($uploader, $document, ['title' => 'Case File (final)', 'recipients' => [$tagged->id]])
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame('Case File (final)', $document->fresh()->title);
+        $this->assertSame(0, $document->logs()->whereIn('action', [
+            DocumentAction::ViewerAdded->value,
+            DocumentAction::ViewerRemoved->value,
+        ])->count());
+    }
+
+    /**
+     * A public document tags nobody, so the field is ignored rather than
+     * obeyed: the level is what decides, and it is not editable here.
+     */
+    public function test_a_public_document_ignores_a_posted_recipient_list(): void
+    {
+        $uploader = User::factory()->superadmin()->create();
+        $other = User::factory()->create();
+
+        $this->actingAs($uploader)->post('/documents', [
+            'title' => 'Office circular',
+            'document_type_id' => $this->typeId('MEMO'),
+            'visibility' => 'public',
+            'file' => UploadedFile::fake()->create('circular.pdf', 16, 'application/pdf'),
+        ])->assertSessionHasNoErrors();
+
+        $document = Document::query()->latest('id')->firstOrFail();
+
+        $this->save($uploader, $document, ['recipients' => [$other->id]])->assertSessionHasNoErrors();
+
+        $this->assertSame(0, $document->allRecipients()->count());
+    }
+
+    /** Only the uploader may change the list, as with every other edit. */
+    public function test_only_the_uploader_may_change_who_a_document_is_shared_with(): void
+    {
+        [$document, , $tagged, $other] = $this->restricted();
+
+        $this->actingAs($tagged)->put("/documents/{$document->id}", [
+            'title' => $document->title,
+            'document_type_id' => $document->document_type_id,
+            'recipients' => [$tagged->id, $other->id],
+        ])->assertRedirect(route('dashboard'));
+
+        $this->assertSame([$tagged->id], $document->recipients()->pluck('users.id')->all());
     }
 }

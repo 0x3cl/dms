@@ -205,7 +205,7 @@ class ArchiveSafetyTest extends TestCase
     {
         $user = User::factory()->create();
 
-        UploadSetting::query()->where('scope', UploadSetting::SCOPE_FILES)
+        UploadSetting::query()->where('scope', UploadSetting::SCOPE)
             ->update(['max_extracted_kb' => 1]);
 
         $archive = $this->archiveFor($user, [
@@ -222,7 +222,7 @@ class ArchiveSafetyTest extends TestCase
     {
         $user = User::factory()->create();
 
-        UploadSetting::query()->where('scope', UploadSetting::SCOPE_FILES)
+        UploadSetting::query()->where('scope', UploadSetting::SCOPE)
             ->update(['max_archive_entries' => 2]);
 
         $archive = $this->archiveFor($user, [
@@ -237,7 +237,7 @@ class ArchiveSafetyTest extends TestCase
     {
         $user = User::factory()->create();
 
-        UploadSetting::query()->where('scope', UploadSetting::SCOPE_FILES)
+        UploadSetting::query()->where('scope', UploadSetting::SCOPE)
             ->update(['max_archive_depth' => 2]);
 
         $archive = $this->archiveFor($user, ['a/b/c/d/deep.pdf' => 'x']);
@@ -299,7 +299,7 @@ class ArchiveSafetyTest extends TestCase
         $user = User::factory()->create();
         $archive = $this->archiveFor($user, ['fine.pdf' => 'x']);
 
-        UploadSetting::query()->where('scope', UploadSetting::SCOPE_FILES)
+        UploadSetting::query()->where('scope', UploadSetting::SCOPE)
             ->update(['max_archive_entries' => 0]);
 
         try {

@@ -14,6 +14,7 @@ use App\Models\Folder;
 use App\Models\ItemShare;
 use App\Models\Section;
 use App\Models\User;
+use App\Services\Files\FileManager;
 use App\Services\Files\FileStorage;
 use App\Services\Files\FolderService;
 use App\Services\Files\OwnershipTransferService;
@@ -394,10 +395,44 @@ class DataIntegrityTest extends TestCase
     }
 
     /**
-     * The standing leak: replacing a document's file left the superseded row
-     * and its bytes in place forever, and nothing pruned them.
+     * A transfer moves what somebody owns, not the record of what they did.
+     *
+     * `version_created_by_*` is a snapshot of who put a version there, in the
+     * same family as `documents.uploader_name` — rewriting it on a transfer
+     * would have every file assert that its new owner uploaded its first
+     * version.
      */
-    public function test_the_purge_removes_a_superseded_document_upload(): void
+    public function test_a_transfer_does_not_rewrite_who_made_a_version(): void
+    {
+        $from = User::factory()->create();
+        $to = User::factory()->create();
+
+        $file = $this->fileFor($from);
+        app(FileManager::class)->replace(
+            $from,
+            $file,
+            UploadedFile::fake()->createWithContent('notes.pdf', str_repeat('second ', 400)),
+        );
+
+        app(OwnershipTransferService::class)->transfer($from, $to, $to);
+
+        $file->refresh();
+
+        $this->assertSame($to->id, $file->user_id, 'ownership moved');
+        $this->assertSame($from->id, $file->version_created_by_id, 'who made the version did not');
+        $this->assertSame($from->name, $file->version_created_by_name);
+    }
+
+    /**
+     * The leak is closed at its source: a replacement no longer orphans a row.
+     *
+     * Replacing a document's file used to call `FileStorage::store()`, which
+     * created a second `files` row and repointed `documents.file_id` at it,
+     * leaving the first behind with nothing pointing at it — and
+     * `files:purge --orphans` existed to sweep up after that. A replacement is
+     * a **version of the same row** now, so there is no orphan to sweep.
+     */
+    public function test_replacing_a_documents_file_leaves_no_orphan_row(): void
     {
         $user = User::factory()->create();
 
@@ -405,24 +440,68 @@ class DataIntegrityTest extends TestCase
             'title' => 'Memo',
             'document_type_id' => DocumentType::query()->where('code', 'MEMO')->value('id'),
             'visibility' => 'public',
-            'file' => UploadedFile::fake()->create('first.pdf', 8, 'application/pdf'),
+            'file' => UploadedFile::fake()->createWithContent('first.pdf', str_repeat('first ', 400)),
         ])->assertSessionHasNoErrors();
 
         $document = Document::query()->sole();
-        $superseded = $document->file;
+        $fileId = $document->file_id;
 
         $this->actingAs($user)->put("/documents/{$document->id}", [
             'title' => 'Memo',
             'document_type_id' => $document->document_type_id,
-            'file' => UploadedFile::fake()->create('second.pdf', 8, 'application/pdf'),
+            'file' => UploadedFile::fake()->createWithContent('second.pdf', str_repeat('second ', 400)),
         ])->assertSessionHasNoErrors();
 
-        $this->assertNotSame($superseded->id, $document->fresh()->file_id);
-        $this->assertSame(2, File::query()->count(), 'The old row is still there before the purge.');
+        $document->refresh();
+
+        $this->assertSame($fileId, $document->file_id, 'the document keeps pointing at the same row');
+        $this->assertSame(2, $document->file->version);
+        $this->assertSame(1, File::query()->count(), 'no second row, so nothing to orphan');
 
         $this->artisan('files:purge --orphans')->assertSuccessful();
 
-        $this->assertNull(File::withTrashed()->find($superseded->id));
+        // Nothing was swept, because nothing was left behind.
+        $this->assertNotNull(File::find($fileId));
+        $this->assertSame(1, $document->file->versions()->count());
+    }
+
+    /**
+     * The sweeper still earns its keep for what the old behaviour left behind.
+     *
+     * Rows orphaned before this change are unattributable by construction —
+     * the old `update()` wrote nothing to either trail and overwrote the
+     * document's `file_name`, so nothing records which document a given orphan
+     * belonged to. They are swept rather than adopted as version 1, because
+     * inventing that chain would put a fabricated history under a real
+     * tracking code.
+     */
+    public function test_the_purge_still_removes_a_pre_existing_orphan(): void
+    {
+        $user = User::factory()->create();
+
+        $this->actingAs($user)->post('/documents', [
+            'title' => 'Memo',
+            'document_type_id' => DocumentType::query()->where('code', 'MEMO')->value('id'),
+            'visibility' => 'public',
+            'file' => UploadedFile::fake()->createWithContent('first.pdf', str_repeat('first ', 400)),
+        ])->assertSessionHasNoErrors();
+
+        $document = Document::query()->sole();
+
+        // An orphan of exactly the shape the old replacement produced: a
+        // document upload in the Tracked Documents folder with no document
+        // pointing at it.
+        $orphan = app(FileStorage::class)->store(
+            UploadedFile::fake()->createWithContent('superseded.pdf', str_repeat('old ', 400)),
+            $document->file->folder,
+            $user,
+        );
+
+        $this->assertSame(2, File::query()->count());
+
+        $this->artisan('files:purge --orphans')->assertSuccessful();
+
+        $this->assertNull(File::withTrashed()->find($orphan->id));
         // The document's current file is untouched.
         $this->assertNotNull(File::find($document->fresh()->file_id));
     }

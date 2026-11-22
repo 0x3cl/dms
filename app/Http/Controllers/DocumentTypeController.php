@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\DocumentType;
+use App\Models\DocumentTypeGroup;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -23,15 +24,84 @@ use Inertia\Response;
  */
 class DocumentTypeController extends Controller
 {
-    public function index(Request $request): Response
+    /**
+     * The groups, which is what this screen opens on.
+     *
+     * A flat table of every type was the whole module, and it answered the
+     * wrong question first: an office looking at twenty rows wants to know
+     * what *kinds* of thing it files before which exact type. So the landing
+     * is the shelf, and a group is opened to see what is on it.
+     *
+     * **"Other" is a row here, not an omission.** Types with no group are
+     * real and have to be reachable, and `group_id` is `nullOnDelete`, so
+     * deleting a group produces some. A set that exists and cannot be opened
+     * is how rows go missing in a screen that looks complete.
+     */
+    public function index(): Response
+    {
+        $groups = DocumentTypeGroup::query()
+            ->withCount([
+                'types as types_count' => fn ($query) => $query->withTrashed(),
+                // What is actually on offer today, which is the number
+                // somebody is looking for; the first is what exists at all.
+                'types as active_types_count' => fn ($query) => $query->where('is_active', true),
+            ])
+            ->orderBy('position')->orderBy('name')
+            ->get(['id', 'code', 'name', 'description', 'position']);
+
+        return Inertia::render('document-types/index', [
+            'groups' => $groups,
+            'ungrouped' => [
+                'types_count' => DocumentType::withTrashed()->whereNull('group_id')->count(),
+                'active_types_count' => DocumentType::query()->whereNull('group_id')->where('is_active', true)->count(),
+            ],
+            'totals' => [
+                'types' => DocumentType::withTrashed()->count(),
+                'active' => DocumentType::query()->where('is_active', true)->count(),
+            ],
+        ]);
+    }
+
+    /**
+     * The types inside one group.
+     *
+     * `$group` is a group's id, `other` for the ungrouped ones or `all` for
+     * every type. Three sets on one screen rather than three screens, because
+     * which subset somebody wants is still a filter — what changed is that
+     * the *group* is now the thing they navigate to, so it is a path segment
+     * rather than a query parameter.
+     */
+    public function group(Request $request, string $group): Response
     {
         $entries = $this->entries($request);
         $search = $request->string('search')->toString();
         $status = $request->string('status')->toString();
 
-        return Inertia::render('document-types/index', [
+        $model = ctype_digit($group) ? DocumentTypeGroup::query()->findOrFail($group) : null;
+
+        abort_unless($model !== null || in_array($group, ['other', 'all'], true), 404);
+
+        return Inertia::render('document-types/group', [
+            'group' => $model === null
+                ? [
+                    'id' => $group,
+                    'name' => $group === 'all' ? 'All types' : 'Other (ungrouped)',
+                    'description' => $group === 'all'
+                        ? 'Every type the office files under, whichever group it sits in.'
+                        : 'Types with no group. They are offered last in the picker, under this heading.',
+                    'editable' => false,
+                ]
+                : [
+                    'id' => $model->id,
+                    'name' => $model->name,
+                    'description' => $model->description,
+                    'position' => $model->position,
+                    'editable' => true,
+                ],
             'types' => DocumentType::withTrashed()
                 ->withCount(['documents' => fn ($query) => $query->withTrashed()])
+                ->when($model !== null, fn ($query) => $query->where('group_id', $model->id))
+                ->when($group === 'other', fn ($query) => $query->whereNull('group_id'))
                 ->when($search !== '', fn ($query) => $query
                     ->where(fn ($inner) => $inner
                         ->where('name', 'like', "%{$search}%")
@@ -64,9 +134,18 @@ class DocumentTypeController extends Controller
         ]);
     }
 
-    public function create(): Response
+    public function create(Request $request): Response
     {
-        return Inertia::render('document-types/form', ['type' => null]);
+        return Inertia::render('document-types/form', [
+            'type' => null,
+            'groups' => DocumentTypeGroup::ordered(),
+            // Reached from inside a group, the form opens already filed there
+            // — the question has been answered once already and asking it
+            // again is how a type ends up in the wrong place.
+            'presetGroup' => DocumentTypeGroup::query()
+                ->whereKey($request->integer('group'))
+                ->value('id'),
+        ]);
     }
 
     public function edit(DocumentType $documentType): Response
@@ -79,9 +158,12 @@ class DocumentTypeController extends Controller
                 'description' => $documentType->description,
                 'is_active' => $documentType->is_active,
                 'position' => $documentType->position,
+                'group_id' => $documentType->group_id,
                 'has_issued' => $documentType->hasIssued(),
                 'documents_count' => $documentType->documentCount(),
             ],
+            'groups' => DocumentTypeGroup::ordered(),
+            'presetGroup' => null,
         ]);
     }
 
@@ -89,12 +171,12 @@ class DocumentTypeController extends Controller
     {
         $validated = $this->validated($request, null);
 
-        DocumentType::create([
+        $type = DocumentType::create([
             ...$validated,
             'code' => strtoupper($validated['code']),
         ]);
 
-        return to_route('document-types.index')->with('success', 'Document type added.');
+        return $this->backToGroup($type)->with('success', 'Document type added.');
     }
 
     /**
@@ -118,7 +200,7 @@ class DocumentTypeController extends Controller
                 : strtoupper($validated['code']),
         ]);
 
-        return to_route('document-types.index')->with('success', 'Document type updated.');
+        return $this->backToGroup($documentType)->with('success', 'Document type updated.');
     }
 
     /**
@@ -141,7 +223,10 @@ class DocumentTypeController extends Controller
 
         $documentType->delete();
 
-        return to_route('document-types.index')->with(
+        // `back()`, not the group route: delete is pressed from a list that
+        // may be searched, filtered and on page three, and sending somebody
+        // to the top of it loses where they were for no reason.
+        return back()->with(
             'success',
             $count === 0
                 ? 'Document type deleted.'
@@ -154,7 +239,18 @@ class DocumentTypeController extends Controller
     {
         $documentType->restore();
 
-        return to_route('document-types.index')->with('success', 'Document type restored.');
+        return back()->with('success', 'Document type restored.');
+    }
+
+    /**
+     * Back to the list the type belongs to, which is where it came from.
+     *
+     * A type with no group lives in "Other" — a real set with its own page,
+     * not a gap — so there is always somewhere to return to.
+     */
+    private function backToGroup(DocumentType $type): RedirectResponse
+    {
+        return to_route('document-types.group', ['group' => $type->group_id ?? 'other']);
     }
 
     /**
@@ -174,6 +270,10 @@ class DocumentTypeController extends Controller
             'description' => ['nullable', 'string', 'max:1000'],
             'is_active' => ['boolean'],
             'position' => ['required', 'integer', 'min:0', 'max:9999'],
+            // A heading in the picker, and an optional one: an ungrouped type
+            // shows under "Other" rather than disappearing, which is also
+            // what deleting a group leaves behind.
+            'group_id' => ['nullable', 'integer', Rule::exists('document_type_groups', 'id')],
         ]);
     }
 

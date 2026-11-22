@@ -19,26 +19,70 @@ use App\Models\File;
  * The two-character prefix shards the tree. A single flat directory holding
  * hundreds of thousands of files is slow to list and, on some filesystems,
  * slow to open a file in at all.
+ *
+ * ## Versions
+ *
+ * A file's versions are distinguished by a `-v{N}` segment, so the inputs are
+ * `(public_id, version, extension)` — still only values this application
+ * generated. **Version 1 has no segment**, which is deliberate: it returns
+ * byte-identically what this class returned before versioning existed, so no
+ * stored path anywhere needed rewriting. All of a file's versions also land
+ * under its own shard, which makes "everything this file occupies on disk" one
+ * directory listing.
+ *
+ * The rule that keeps this honest: **derive on write, read from the column.**
+ * This class decides where the *next* write goes; `files.storage_path` and
+ * `file_versions.storage_path` are the only authority at read time, because a
+ * version's extension may differ from the file's current one and recomputing a
+ * path from the wrong extension would point at bytes that are not there.
  */
 class FilePathFactory
 {
     public function for(File $file): string
     {
-        return $this->fromParts($file->public_id, $file->extension);
+        return $this->forVersion($file->public_id, (int) ($file->version ?? 1), $file->extension);
     }
 
     public function fromParts(string $publicId, string $extension): string
     {
+        return $this->forVersion($publicId, 1, $extension);
+    }
+
+    /** Where version `$version` of this file's bytes belong. */
+    public function forVersion(string $publicId, int $version, string $extension): string
+    {
         $shard = substr($publicId, 0, 2);
         $suffix = $this->normalizeExtension($extension);
 
-        return "{$shard}/{$publicId}{$suffix}";
+        return "{$shard}/{$publicId}{$this->versionSegment($version)}{$suffix}";
     }
 
     /** The thumbnail beside its file, under the same shard. */
     public function thumbnailFor(File $file): string
     {
-        return substr($file->public_id, 0, 2).'/'.$file->public_id.'-thumb.webp';
+        return $this->thumbnailForVersion($file->public_id, (int) ($file->version ?? 1));
+    }
+
+    /**
+     * A thumbnail per version, which is not tidiness.
+     *
+     * At one shared path a replacement would overwrite it, and every
+     * superseded image in the history list would then render the *newest*
+     * picture — a quiet lie in exactly the screen the history exists for. Per
+     * version, a replacement invalidates nothing and only the new current
+     * version needs generating.
+     */
+    public function thumbnailForVersion(string $publicId, int $version): string
+    {
+        $shard = substr($publicId, 0, 2);
+
+        return "{$shard}/{$publicId}{$this->versionSegment($version)}-thumb.webp";
+    }
+
+    /** Empty for version 1, so every pre-versioning path still resolves. */
+    private function versionSegment(int $version): string
+    {
+        return $version > 1 ? "-v{$version}" : '';
     }
 
     /**

@@ -19,6 +19,7 @@ Built on the pieces that landed before it — the private disk and obfuscated UR
 | `resources/js/pages/files/{index,browse,trash}.js` | |
 | `resources/js/components/{FileGrid,FileTable,FileIcon,ViewToggle,FileBreadcrumbs,ShareDrawer,FilePreviewModal,FolderPickerModal,FileFilterModal,ConfirmDeleteModal,LoadingFrame}.js` | |
 | `resources/js/utils/file-rows.js` | One definition of a row's size, badge and action list, for both views |
+| `resources/js/composables/usePreviewDescriptor.js` | The preview descriptor fetch: cache, de-duplication, read-ahead |
 | `tests/Feature/{FileManagerTest,FileLifecycleTest,FilePreviewTest}.php` | The screens; delete/restore/purge/move/copy; the viewers |
 
 ## The controllers decide nothing
@@ -43,13 +44,13 @@ A refusal is a `ValidationException`, not a 403, so it arrives as the flash the 
 
 A root folder cannot be renamed or deleted. It is an implementation detail named `root-{id}` and never rendered.
 
-### A delete is confirmed with a code the server issued
+### A *permanent* delete is confirmed with a code the server issued
 
-`App\Services\Files\DeletionConfirmation` mints a four-digit code into the session, the dialog displays it, and the delete request carries what the person typed. A mismatch, an expiry or a missing code is a validation error and nothing is touched.
+`App\Services\Files\DeletionConfirmation` mints a four-digit code into the session, the dialog displays it, and the **purge** request carries what the person typed. A mismatch, an expiry or a missing code is a validation error and nothing is touched.
 
 > **Trap.** It is deliberately **not** a browser-side check. A code the page invents and verifies itself is a label on a button: the request underneath it still deletes, so a replayed form, a script or a stale tab bypasses the whole thing. The code is spent on use, so one cannot be harvested and reused — asserted by `test_a_confirmation_code_works_once`.
 
-> **Trap.** Two purposes, not one. `PURPOSE_DELETE` and `PURPOSE_PURGE` are separate because moving something to the trash is reversible and erasing it is not; a code issued for the first does not satisfy the second.
+> **Trap.** It is spent only where nothing can undo the outcome. **Moving to trash carries no code** — there were two purposes, on the right reasoning that a code issued for a reversible act must not satisfy an irreversible one, and the wrong conclusion that both therefore needed one. Identical friction on both stopped being read: people learned to type four digits as the way past a dialog, which is the muscle memory the code exists to interrupt, and the reversible act was the heavier dialog on screen. `PURPOSE_PURGE` is the only value `$purpose` takes today, and `/files/confirm-code` refuses to mint one for anything else — a code nothing will check is a credential handed out for nothing. Trash is an ordinary small confirmation that still states the count going with it.
 
 `GET /files/delete-preview` counts what a recursive delete would take — folders, files, bytes, and a few names — so the dialog can state the cost **before** it is paid rather than after. Every subject is resolved through `AccessResolver` first: a count of what is inside a folder is itself a disclosure about that folder.
 
@@ -61,9 +62,13 @@ The activity row is written **before** the delete, while there is still a name t
 
 > **Trap.** Only a trashed item, and only its owner or an administrator. Purging straight from a listing would mean an irreversible action one click from a folder view.
 
-### Restoring puts it back where it was
+### Restoring puts it back where it was, with what went with it
 
 Deleting a folder soft-deletes its subtree, so **a trashed item whose own container is also trashed is the normal case, not an edge one.** `restore()` revives the chain above the item along with it, shallowest first, and `Folder::ancestors()` is deliberately *not* used for that walk — it goes through the model's default query, where the soft-delete scope hides exactly the folders that need reviving.
+
+It revives the subtree **below** it too, matched on `deleted_batch`. Without that, restoring a trashed folder returned an *empty* folder: its children stayed soft-deleted and, because the trash lists only what was deleted directly, they were unreachable from My Files and from the trash alike — while the dialog promised "restoring the folder brings all of it back together". Every restore test used a single file, so nothing caught it.
+
+> **Trap.** The grouping is an identifier, not a timestamp. Each delete stamps one uuid across every row it touches (`files.deleted_batch`, `folders.deleted_batch`, both indexed), and `restoreSubtreeOf()` revives exactly the rows sharing it — so a child somebody trashed on its own last week stays in the trash when its parent comes back today, because that person never asked for it back. `deleted_at` cannot express this: it is second-precision, so two unrelated deletes in the same second are indistinguishable. Rows trashed before the column existed carry null and restore as they did before, item and ancestors only; null is never treated as a batch of its own.
 
 Three outcomes, all recorded in the activity row's context:
 
@@ -87,6 +92,25 @@ Three outcomes, all recorded in the activity row's context:
 > **Trap.** The failure row is written *outside* the transaction, after the rollback. Inside, it would be rolled back with the work it was recording — the trap that makes "log the error in the same transaction" useless exactly when it matters.
 
 > **Trap.** Authorization refusals are deliberately outside this. They resolve before the transaction opens, and recording them would let anyone holding an id fill the trail with rows about items they cannot touch.
+
+## Replacing a file, and reading its history
+
+Two row actions, beside Rename because all three alter or describe an item in place.
+
+| Action | Offered when | What it does |
+| --- | --- | --- |
+| **Replace file** | `can.replace` | `ReplaceFileModal` → `POST /files/replace`. The new file becomes the next version; the item keeps its name, its link and its shares |
+| **Version history** | `can.view` and `version > 1` | `FileVersionsModal` → fetches `GET /files/versions`. Every version, with who, when, the size, the note, and View / Download / Restore |
+
+Both come from `rowActions()` in `resources/js/utils/file-rows.js`, so the grid and the table get them from the one function both import.
+
+> **Trap.** `can.replace` is **not** `can.rename`, and that is the point. It is resolved by `FileManager::mayReplace()`, which additionally requires that a *tracked document's* file be replaced only by the document's uploader — otherwise anybody holding a manage share could swap the bytes a printed tracking code names. One method answers for both the button and the refusal, so they cannot disagree.
+
+> **Trap.** The history is **fetched when the modal opens**, never shipped with the listing — the same rule as the preview descriptor, and for the same reason: each entry carries URLs that open bytes.
+
+> **Trap.** Browse Storage offers the history and never the replace. `files.manage` is a *read* across other people's storage — view and download, nothing else — so `can.replace` is false on every row there and the action simply never appears.
+
+A version's thumbnail lives at its own path, so an older image version in the list shows its own picture rather than the newest one. See `files.md` → Versioning for the path rule and for why a version is not an access subject.
 
 ## The grid/table toggle
 
@@ -138,6 +162,23 @@ One `document` mode for both, deliberately: the page then has one frame and one 
 
 > **Trap.** Media is served as a real `BinaryFileResponse`, not a streamed one. A `<video>` seeks with a Range request, and a streamed response answers one with the whole file and a 200 — so the player either cannot seek or re-downloads from the start on every scrub.
 
+### Making a preview fast
+
+An Office preview is three serial waits: our descriptor request, Microsoft's fetch of the file, their render. Only the first two are ours, and both were slower than they needed to be.
+
+| Change | Where | What it fixes |
+| --- | --- | --- |
+| Descriptor cache, in-flight de-duplication, neighbour read-ahead | `resources/js/composables/usePreviewDescriptor.js` | Reopening a file or arrowing back to one was a fresh round trip that also minted a fresh credential. Both file-manager pages had their own copy of the fetch and neither cached. The cache TTL is **four minutes, inside the signed URL's ten**, so a cached descriptor can never hand the viewer a URL that has already expired — that would trade a slow preview for a broken one. |
+| Hover prefetch | `FileGrid` / `FileTable` emit `prefetch` | A hover is a strong hint a click is coming, so by the time the modal opens the viewer URL is already in hand. Harmless if the click never comes: the result is a cache entry. |
+| `FileStorage::viewerStream()` | the signed viewer route | An Office file is deliberately **not** in `INLINE_TYPES`, so `inline()` fell through to `download()` — a streamed attachment with no `Content-Length` and whatever type was sniffed at upload. Microsoft fetches this from their own servers; a fetcher with no length cannot start before it has read the whole body, cannot resume, and may not recognise the format. Now a real file response with the catalogue's canonical type, a length and range support. |
+| `Cache-Control: private, max-age=600` + an `ETag` of the stored checksum | `FileStorage::inline()` | Laravel's default is `no-cache`, and an embedded preview re-requests its source on every resize, re-mount and reload — so a 20 MB PDF came off the disk again each time. |
+
+> **Trap.** `private` on those responses is load-bearing. The URL is obfuscated but the bytes belong to a possibly-confidential item, and a shared cache would hand them to whoever asked for the same URL next, behind the resolver's back. `no-store` is not used, because the browser's own cache is what makes the second render instant — and it is the cache of the one person who already passed the gate.
+
+> **Trap.** `describe()` takes a ticket per call and adopts a response only if it is still the newest. Arrowing quickly through five files otherwise ends with the first response, arriving last, overwriting the fifth.
+
+> Rendering Word and Excel **locally** would remove Microsoft from the path entirely and is still not possible here: it needs LibreOffice on a deployment target that has neither it nor Imagick (the same constraint that made QR labels SVG).
+
 > **Trap.** `image/svg+xml` is deliberately absent from both the image mode and `FileStorage::INLINE_TYPES`. An SVG is a document that can carry script, and rendering one inline executes it against this origin.
 
 ### The Office viewer is the one door the private disk opens
@@ -165,7 +206,9 @@ So `FilePreview::viewerCanReachUs()` reads `app.url` and, when it is plainly loc
 
 ## The share drawer is link-based
 
-`ShareDrawer` is a slide-in panel offering **share links** — access (view, or view and download), expiry, a cap on opens, copy and revoke — and, read-only beneath that, who already holds access, with a revoke beside each.
+`ShareDrawer` is a slide-in panel with two tabs: **Share link** — access (view, or view and download), expiry, a cap on opens, copy and revoke — and **People with access**, read-only but for a revoke beside each row.
+
+**One live link per item, whose terms are edited rather than replaced.** Several links to one thing is several credentials with separate expiries and caps, and nothing on screen can say which of them the message somebody sent last week carried, so revoking the wrong one is the normal outcome. `SharingService::createLink()` refuses a second and `updateLink()` changes the one that exists — **keeping its token**, because revoke-and-recreate silently breaks every message the old URL was pasted into, which is the opposite of what somebody narrowing a link from download to view is asking for. An edit never resets `view_count`: views are a record of what happened, not a budget.
 
 **Naming people happens where the thing is created**: the New folder dialog has a recipient picker, and so does the document upload form. A second place to grant access, opened later from a panel, is how an item ends up shared with people nobody remembers choosing — and the tag is far more likely to be right at the moment somebody is deciding who a folder is for.
 
@@ -175,7 +218,11 @@ So `FilePreview::viewerCanReachUs()` reads `app.url` and, when it is plainly loc
 
 > **There was no drawer component in this design system.** The only off-canvas panel was baked into `AdminShell`'s mobile sidebar, so this extracts the pattern rather than duplicating it inline.
 
-A link's two parameters are **enforced, not displayed**: `ShareLink::isUsable()` and the item's visibility are both re-evaluated on every redemption. A confidential item reports `linkable: false`, so the panel explains instead of offering a control that would be refused — and a link made before an item was classified stops working at that moment.
+A link's two parameters are **enforced, not displayed**: `ShareLink::isUsable()` and the item's visibility are both re-evaluated on every redemption — and on every *edit*, because an item can be reclassified confidential after a link has been handed out and widening that link must not be the way back in.
+
+**Whoever opens the link is asked who they are**, and may decline — see `App\Services\Files\GuestIdentity`. Declining mints a stable per-device handle, nothing is recorded and no view is spent until they answer, and the bytes are behind the same question the page is. The name is never authentication: it lands in `actor_name` with a null `actor_id` and the suffix "(link visitor)".
+
+**The landing page previews through `FilePreview`**, resolved through the link, so a shared Word document renders in the browser exactly as it does in My Files. A confidential item reports `linkable: false`, so the panel explains instead of offering a control that would be refused — and a link made before an item was classified stops working at that moment.
 
 ## The three screens
 
@@ -240,9 +287,20 @@ Each file and folder payload carries a server-resolved `can` object, and the keb
 ## Not done here
 
 - **Drag-and-drop upload.** The modal takes a multi-file input; there is no dropzone.
-- **File versioning.** Deliberately not built — see `files.md`, which records what the current shape already supports and the two things that would have to change.
 - **Selecting folders in a listing.** The checkbox column is files only, so a bulk Move, Copy or Delete acts on files; a folder is moved, copied or deleted from its own kebab menu.
 
 ### Done since this doc was first written
 
-Zip and extract (`ArchiveService`), the administrator-editable upload policy (`upload_settings`), the folder picker behind Move and Copy, a navigable trash with permanent deletion, the filter dialog, Office and media previews, and the merge of Shared with Me into My Files.
+Zip and extract (`ArchiveService`), the administrator-editable upload policy (`upload_settings`), the folder picker behind Move and Copy, a navigable trash with permanent deletion, the filter dialog, Office and media previews, the merge of Shared with Me into My Files, and **file versioning**.
+
+## Which viewer (updated)
+
+`FilePreview::describe()` returns three mutually exclusive answers, and the page picks none of them itself:
+
+| Answer | Formats | Rendered by |
+| --- | --- | --- |
+| `renders_locally` | PDF | the browser |
+| `client_renderer` | `docx`, `docm`, `xlsx`, `xlsm`, `xlsb`, `csv` | `OfficeRenderer`, in the browser, from `files.stream` |
+| `viewer_url` | `pptx`, `ppt`, `pps`, `potx`, legacy `doc`, `xls` | Microsoft's Office viewer, over a signed expiring URL |
+
+Only the third sends anything outside, so only the third is refused for a confidential item and re-checked on every fetch. The second is why document preview now works on a developer machine and on a LAN, and why a confidential Word file can be previewed at all.

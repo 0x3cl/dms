@@ -40,6 +40,7 @@ class Modules
     public const MODULES = [
         'documents',
         'documents-all',
+        'access-requests',
         'files',
         'download-logs',
         'activity-trails',
@@ -73,6 +74,18 @@ class Modules
     public const MODULE_ACTIONS = [
         'documents' => ['read', 'create', 'write', 'delete', 'share', 'download'],
         'documents-all' => ['read'],
+
+        /*
+         * Asking to be let into a document, and answering.
+         *
+         * **No `write` or `decide` action, deliberately.** Whether somebody may
+         * answer a request is a per-record question — it is addressed to the
+         * document's uploader — and a module permission for it would create
+         * requests nobody holding the checkbox could answer, which is a dead
+         * letter rather than a protection. Same distinction as
+         * `documents.delete` versus `DocumentController::owns()`.
+         */
+        'access-requests' => ['read', 'create'],
 
         /*
          * The file manager carries the widest action set, and `manage` is
@@ -145,7 +158,7 @@ class Modules
      * @var array<string, list<string>>
      */
     public const MODULE_GROUPS = [
-        'Documents' => ['documents', 'documents-all'],
+        'Documents' => ['documents', 'documents-all', 'access-requests'],
         'Storage' => ['files'],
         'Reports' => ['download-logs', 'activity-trails'],
         'Directory' => ['users', 'divisions', 'sections'],

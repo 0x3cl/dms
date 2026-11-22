@@ -5,12 +5,14 @@ import Card from '../../components/Card';
 import FileBreadcrumbs from '../../components/FileBreadcrumbs';
 import FileGrid from '../../components/FileGrid';
 import FilePreviewModal from '../../components/FilePreviewModal';
+import FileVersionsModal from '../../components/FileVersionsModal';
 import FileTable from '../../components/FileTable';
 import IndexControls from '../../components/IndexControls';
 import FolderPickerModal from '../../components/FolderPickerModal';
 import Pagination from '../../components/Pagination';
 import SearchableSelect from '../../components/SearchableSelect';
 import ViewToggle from '../../components/ViewToggle';
+import usePreviewDescriptor from '../../composables/usePreviewDescriptor';
 
 /**
  * Other people's storage, for an administrator.
@@ -27,7 +29,7 @@ import ViewToggle from '../../components/ViewToggle';
 export default defineComponent({
     name: 'FilesBrowse',
     components: {
-        AdminShell, Card, FileBreadcrumbs, FileGrid, FilePreviewModal, FileTable,
+        AdminShell, Card, FileBreadcrumbs, FileGrid, FilePreviewModal, FileVersionsModal, FileTable,
         FolderPickerModal, Head, IndexControls, Pagination, SearchableSelect, ViewToggle,
     },
     props: {
@@ -77,38 +79,36 @@ export default defineComponent({
          * video show as "no preview" on one screen and play on another.
          */
         const previewIndex = ref(-1);
-        const previewFile = ref(null);
         const previewable = computed(() => (props.files?.data ?? []).filter((file) => file.can.view));
+        const { describe, descriptor: previewFile, forget, loading: previewLoading, prefetch } = usePreviewDescriptor();
 
-        const describe = async (file) => {
-            previewFile.value = null;
+        const neighboursOf = (index) => [previewable.value[index - 1], previewable.value[index + 1]].filter(Boolean);
 
-            try {
-                const response = await fetch(`/files/preview?owner=${file.owner_public_id}&file=${file.public_id}`, {
-                    headers: { Accept: 'application/json' },
-                    credentials: 'same-origin',
-                });
-
-                previewFile.value = response.ok
-                    ? await response.json()
-                    : { mode: 'none', name: file.name, can_download: false };
-            } catch {
-                previewFile.value = { mode: 'none', name: file.name, can_download: false };
-            }
+        const show = (index) => {
+            previewIndex.value = index;
+            describe(previewable.value[index], neighboursOf(index));
         };
 
         const openPreview = (file) => {
-            previewIndex.value = previewable.value.findIndex((c) => c.public_id === file.public_id);
-            describe(file);
+            const index = previewable.value.findIndex((candidate) => candidate.public_id === file.public_id);
+
+            if (index < 0) return;
+
+            show(index);
         };
-        const closePreview = () => { previewIndex.value = -1; previewFile.value = null; };
+
+        const prefetchPreview = (file) => {
+            if (file?.can?.view) prefetch(file);
+        };
+
+        const closePreview = () => { previewIndex.value = -1; forget(); };
+
         const navigatePreview = (step) => {
             const next = previewIndex.value + step;
 
             if (next < 0 || next >= previewable.value.length) return;
 
-            previewIndex.value = next;
-            describe(previewable.value[next]);
+            show(next);
         };
 
         // Taking a copy asks where it should go, the same picker My Files uses.
@@ -130,8 +130,18 @@ export default defineComponent({
             });
         };
 
+        /*
+         * History only, no replacing. `files.manage` is a *read* across other
+         * people's storage — it carries view and download and nothing else —
+         * so `can.replace` is false on every row here and the action never
+         * appears. The history is still worth reading: it is part of what an
+         * administrator is looking at the file to understand.
+         */
+        const versioning = ref(null);
+
         const act = ({ item, kind, action }) => {
             if (action === 'preview') { openPreview(item); return; }
+            if (action === 'versions') { versioning.value = item; return; }
             if (action === 'download') { window.location = streamUrl(item); return; }
             if (action === 'copy') {
                 copyError.value = '';
@@ -140,9 +150,10 @@ export default defineComponent({
         };
 
         return {
+            versioning,
             act, chooseOwner, closePreview, confirmCopy, copyError, copyProcessing, copying, filters,
-            folderHref, load, navigatePreview, openPreview, ownerOptions, page, previewFile,
-            previewIndex, previewable, search, setView,
+            folderHref, load, navigatePreview, openPreview, ownerOptions, page, prefetchPreview,
+            previewFile, previewIndex, previewLoading, previewable, search, setView,
         };
     },
     template: `
@@ -198,6 +209,7 @@ export default defineComponent({
                     :folder-href="folderHref"
                     :selectable="false"
                     @act="act"
+                    @prefetch="prefetchPreview"
                     @preview="openPreview" />
                 <FileTable
                     v-else
@@ -206,6 +218,7 @@ export default defineComponent({
                     :folder-href="folderHref"
                     :selectable="false"
                     @act="act"
+                    @prefetch="prefetchPreview"
                     @preview="openPreview" />
 
                 <Pagination v-if="files" :pagination="files" @page="page" />
@@ -215,10 +228,17 @@ export default defineComponent({
         <FilePreviewModal
             :open="previewIndex >= 0"
             :file="previewFile"
+            :loading="previewLoading"
             :has-previous="previewIndex > 0"
             :has-next="previewIndex >= 0 && previewIndex < previewable.length - 1"
             @close="closePreview"
             @navigate="navigatePreview" />
+
+        <FileVersionsModal
+            :open="versioning !== null"
+            :item="versioning"
+            @close="versioning = null"
+            @reverted="load" />
 
         <FolderPickerModal
             :open="copying !== null"

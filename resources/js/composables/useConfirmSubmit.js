@@ -16,11 +16,28 @@ import { reactive } from 'vue';
  * `processing` belongs to this object too, not to the Inertia form: it is what
  * keeps the modal open and its buttons disabled for the length of the request,
  * and `cancel()` reads it to refuse a dismissal mid-flight.
+ *
+ * **`request()` refuses to open the dialog over an invalid form.** Bind it to
+ * `@submit.prevent="request"` and it checks the form the event came from
+ * first. Asking "create this type?" about a form that cannot be created is
+ * the worst of both: the person answers yes, the server refuses, and the
+ * errors appear *behind* a dialog they then have to dismiss to read. The
+ * browser's own `reportValidity()` does the checking and the messaging, so
+ * the fields need nothing but `required` — and a form with no constraints is
+ * unaffected, because `reportValidity()` returns true for one.
  */
 export default function useConfirmSubmit(submit) {
     const confirm = reactive({ open: false, processing: false });
 
-    const request = () => { confirm.open = true; };
+    const request = (event) => {
+        const form = event?.target;
+
+        if (typeof form?.reportValidity === 'function' && !form.reportValidity()) {
+            return;
+        }
+
+        confirm.open = true;
+    };
     const cancel = () => { if (!confirm.processing) { confirm.open = false; } };
     const proceed = () => {
         confirm.processing = true;

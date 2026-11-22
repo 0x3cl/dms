@@ -79,7 +79,9 @@ export default defineComponent({
         <Transition
             enter-active-class="transition duration-150 ease-out" enter-from-class="opacity-0 scale-95" enter-to-class="opacity-100 scale-100"
             leave-active-class="transition duration-100 ease-in" leave-from-class="opacity-100 scale-100" leave-to-class="opacity-0 scale-95">
-            <div v-if="open" class="absolute right-0 z-50 mt-2 w-80 origin-top-right overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+            <!-- The same width as the other header menus, capped at the
+                 viewport so a phone gets whatever room there is. -->
+            <div v-if="open" class="absolute right-0 z-50 mt-2 w-[min(26rem,calc(100vw-2rem))] origin-top-right overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
                 <div class="border-b border-slate-100 px-4 py-3">
                     <p class="text-sm font-bold uppercase tracking-wide text-slate-800">Tutorials</p>
                     <p class="mt-0.5 text-xs text-slate-500">A guided walkthrough, right here on the page.</p>

@@ -13,13 +13,16 @@ Documents used to be stored with `$file->store('documents', 'public')`. That put
 | `config/filesystems.php` | The private `documents` disk. **No entry in `links`** |
 | `app/Models/Concerns/HasPublicId.php` | The opaque identifier, and route binding by it |
 | `app/Models/{Folder,File}.php` | The tree and the files in it |
+| `app/Models/FileVersion.php` | A file as it was before it was replaced — superseded versions only |
+| `app/Contracts/StoredBytes.php` | Bytes on a disk, whichever version they are. **Never an authorization subject** |
+| `app/Services/Files/FileVersionService.php` | Superseding, reverting, and assembling the history |
 | `app/Services/Files/FilePathFactory.php` | **The only place a disk path is built** |
 | `app/Services/Files/FileStorage.php` | Everything that reads or writes bytes |
 | `app/Services/Files/FolderService.php` | Tree invariants: roots, paths, depths, the cycle guard |
 | `app/Services/Access/AccessResolver.php` | **The one place access is decided** |
 | `app/Http/Controllers/FileStreamController.php` | Serves bytes at the obfuscated URL |
 | `app/Console/Commands/ImportDocumentsIntoStorage.php` | Carries pre-existing documents over |
-| `tests/Feature/{FileAccessTest,DocumentImportTest}.php` | |
+| `tests/Feature/{FileAccessTest,DocumentImportTest,FileVersionTest}.php` | |
 
 ## The obfuscated URL
 
@@ -113,28 +116,115 @@ The bytes are **copied, not moved**, and the source is left in place: the comman
 
 > A document whose uploader has been deleted is filed under an `UNASSIGNED` holding account. `documents.user_id` is `nullOnDelete`, so that is an expected state, not a corruption — but the bytes still need a folder and a folder needs an owner. The `files` row keeps `user_id` null and its `owner_name` snapshot.
 
-## Built to allow versioning later, not built for it
+## Versioning
 
-Versioning is a later phase and **is not implemented**. No `version` column, no `version_of_file_id`, no `is_current_version` — a dormant column is the same kind of lie as a permission that gates nothing: it reads as capability and grants none, and the first person to trust it writes against a shape nothing maintains.
+A file is a sequence of versions. The first upload is version 1, a replacement is version 2, and **nothing is ever thrown away**.
 
-What matters is that nothing in the current shape has to be undone to add it. Recorded here so the next phase starts from facts rather than from a re-reading of the code:
+**The `files` row is the current version.** Only superseded versions move to `file_versions`; the current one stays on the row, where `storage_path` has always been the single statement of where its bytes are.
 
-| Already true | Why it helps |
+That choice is what keeps everything else still:
+
+| Invariant | Why it survives |
 | --- | --- |
-| `files.storage_path` is derived from the row's own `public_id` | Two rows are two paths. A second version is a new row with its own bytes — no path scheme to invent, and no file to overwrite in place |
-| Nothing but `FilePathFactory` builds a path | One place to teach about a version segment, if one is ever wanted |
-| `documents.file_id` is the whole of the document→bytes link | Pointing a document at a different version is one column, and `documents.code`, its trail and its recipients are untouched |
-| `activity_logs.subject` is a morph **with no foreign key** | A row stays readable after the file it refers to is purged, so a superseded version's history survives it |
-| `item_shares` and `share_links` are morphs to the item | A share can be attached to whatever a version turns out to be, without a second sharing table |
-| Every operation goes through `FileManager`, which transacts and records | A version swap gets authorization, a transaction and an audit row by being written there |
-| `files.checksum` is already stored | "Is this actually a new version?" is answerable without reading bytes |
+| `unique(folder_id, name)` | Still one row per file in `files`, so the index never had to move |
+| `AccessResolver::scopeVisible()` and `FileListingTest` | A version is not a listed item. The listing rule did not change, and `test_a_version_is_never_a_listed_item` says so |
+| `documents.file_id` (UNIQUE) | A document points at the same row forever, so a replacement leaves the tracking code, the stored QR label, the share link **and its token and view count**, every recipient row and the whole trail untouched |
+| `public_id`, and therefore every URL | Unchanged by a replacement; `/files/{owner}/{file}` keeps working |
+| `item_shares`, `share_links` | Attached to the file, so they survive too |
 
-Two things would have to change, and both are additions rather than rewrites:
+### What a replacement is
 
-1. **A current-version pointer**, however it is modelled, has to be the thing `(folder_id, name)` is unique over. Today that unique index is what makes two files of one name in one folder impossible; versions of one file share a name by definition, so the index has to move to the *current* row or to a parent record.
-2. **`PurgeTrashedFiles::reasonToKeep()`** would need a clause for "a later version points at it", beside the ones for a tracked document, a share and a live link.
+One sentence: **move the current-version descriptor off `files` into `file_versions` verbatim, then write the new descriptor onto `files`.** Nothing is invented and nothing is derived, which is why the history reads out of two tables with one shape.
 
-> **Trap for that phase.** `FileEventRecorder` mirrors exactly two actions into `document_logs`. A new `version_created` action belongs in `activity_logs` only — a document's travel history is rendered to everyone who can read the document, and "somebody replaced the file" is a different audience from "somebody received it".
+`App\Services\Files\FileVersionService` does that; `FileManager::replace()` and `::revertTo()` own the authorization, the transaction and the audit row, because every structural file operation in this application goes through that class.
+
+**A row describes the version it holds, not the act that ended it.** `file_versions` carries `created_by_id`/`created_by_name`, `note`, `reverted_from`, `became_current_at` and `superseded_at`, and `files` mirrors the first four as `version_created_by_*`, `version_note`, `version_reverted_from`, `version_created_at`. The obvious alternative — only "who superseded this" — records who put version 3 there on version 2's row, and who put the **current** version there nowhere at all. It cannot be borrowed from `activity_logs` either: that table is behind `activity-trails.read`, while this history must be readable by anyone who may read the file.
+
+> **Trap.** A version carries a full copy of the metadata rather than a diff, because it has to be servable on its own — and because a replacement may be a **different format**. `report.doc` replaced by `report.docx` is ordinary office work, so `extension`, `mime_type`, `size_bytes` and `checksum` are per version, and the viewer is chosen from the version's.
+
+> **Trap.** **Identical bytes are allowed and labelled, not refused.** `replace()` used to throw *"that is the file already stored"* when the incoming checksum matched, on the reasoning that an identical version is a fabricated entry in a history whose purpose is to be truthful. Right goal, wrong means, twice over. It is not true that nothing changed — a replacement rewrites `original_name`, the extension and the MIME type, so re-uploading a document under the name a browser gave it (`template(1).docx` for `template.docx`, which is what downloading your own file and sending it back produces) is a real change that this refused outright. And it fired from the *document edit form*, where the file picker sits beside the title: leaving the same file in it, which is the natural thing to do, failed the whole save and blamed the file for a title that would not update. `FileVersionService::isUnchanged()` is a label now, recorded as `identical_bytes` on the activity row and only when true, so the history stays truthful by saying what happened rather than by refusing to record it.
+
+> **Trap.** Because of that, nothing describing the *bytes* may read `files.name`. The preview descriptor did, so a `.wav` uploaded over a `.docx` drew an audio player titled "template.docx" — mode, size, type and bytes all the new version's, and only the name the old one's. It is `downloadName()` now, which is the version's own `original_name` and what a download of it arrives as.
+
+> **Trap.** A replacement must change the URL the preview is fetched from. `/files/{owner}/{file}` is stable across one by design — `public_id` never changes, which is what the tracking code, the stored QR label and the share link rest on — and the stream response is cacheable for ten minutes, so a descriptor that named the version only when superseded served the *previous* bytes at exactly the URL the new ones live at. An ETag cannot save this: `max-age` means "do not even ask", so the revalidating request is never made. Every preview URL names its version now, which also makes each one immutable, and the thumbnail URL in `FileGrid` carries it for the same reason.
+
+> **Trap.** `files.name` is never rewritten by a replacement. A version is the same file by definition, and a rename would have to consult `assertNameFree()`, which can *refuse* — a replacement refused because somebody's trashed file holds the new name would be absurd. So the listing keeps the name it had while the download name, the viewer and the thumbnail follow the real bytes.
+
+### Paths
+
+`FilePathFactory` gained `forVersion($publicId, $version, $extension)` and `thumbnailForVersion($publicId, $version)`. Still a pure function of values this application generated; the only change is a `-v{N}` segment.
+
+**Version 1 has no segment**, which is why nothing needed rewriting: every path already on disk is exactly what `forVersion(..., 1, ...)` produces. All of a file's versions also land under its own two-character shard, so "everything this file occupies" is one directory listing.
+
+> **The rule: derive on write, read from the column.** The factory decides where the *next* write goes. `files.storage_path` and `file_versions.storage_path` are the only authority at read time, because a version's extension may differ and recomputing a path from the wrong one points at bytes that are not there.
+
+> **Trap.** Thumbnails are versioned for a reason that is not tidiness. At one shared path a replacement would overwrite it, and every superseded image in the history list would render the *newest* picture — a quiet lie in exactly the screen the history exists for.
+
+### A version is not an access subject
+
+`AccessResolver` never learns about versions, and must not. Whoever may read a file may read its history: a version has no visibility, no shares and no links of its own, so `grant()` keeps its `File|Folder|Document` signature and the tracked-document rule still reaches a superseded version through `forFile()` → `forDocument()`.
+
+`App\Contracts\StoredBytes` exists so this stays true in practice. `File` and `FileVersion` both implement it, and `FileStorage`, `ThumbnailGenerator` and `FilePreview` read bytes through it — so serving version 1 is the same code path as serving the current version, rather than `$version?->storage_path ?? $file->storage_path` repeated at nine call sites. Nothing on that interface is ever the subject of an authorization call.
+
+**A download is named after the version it holds.** `report.docx` at version 3 arrives as `report (v3).docx`, through `App\Support\VersionedFilename`. Two downloads of one file used to land under the same name, which is the problem versioning exists to solve reproduced in the one place a reader keeps the file — a folder holding `report.docx` and `report(1).docx` says which one the browser saved second and nothing about which version either is. An existing stamp is replaced rather than appended to, because downloading version 1, re-uploading it as version 2 and downloading again is an ordinary sequence now that an identical replacement is allowed.
+
+> **Trap.** The stamp is applied where a download is *served* — `FileStorage::download()` and the document file route — and never on `StoredBytes::downloadName()`. That method is the file's **name**, and `ActivityLog::record()` snapshots it as `subject_label`: stamping the model put "(v3)" into the trail's record of what a file was called, which is a presentation choice rewriting history. `DataIntegrityTest` caught it, and `test_the_version_stamp_does_not_reach_the_audit_label` holds the line.
+
+> **Trap.** The document page's Download button must carry `?version=` for the version on screen. It was a bare `/documents/{id}/file/download`, which always served the current bytes — so a reader on version 1, with the page warned and watermarked to say so, pressed Download and silently received version 3: the exact failure the warning exists to prevent, handed out by the control beside it. One computed `downloadUrl` feeds both buttons, because two links to one thing is how one keeps a bug the other fixed.
+
+**Full screen is in the URL too.** `?fullscreen=true` beside `?version=`, for the same reason: it is part of what somebody is looking at, so a reload or a pasted link reproduces it rather than dropping the reader back to a closed frame. Only `true` is ever written — the absence of the parameter already means closed, and `?fullscreen=false` on every other URL would be a parameter that says nothing.
+
+**The version history renders in two places and is written once.** `VersionList` is the drawer beside the document and the aside inside the full-screen preview; two copies of "what does a version row look like" is how one of them quietly stops showing something the other learned to show. It decides nothing — which versions exist and whether they may be downloaded are the caller's answers — and `dark` is its only concession to where it is used, because the drawer sits on white and the aside on near-black.
+
+> **Trap.** Showing a version from the *drawer* closes it; showing one from the *full-screen aside* does not. They look inconsistent and are the same rule: close whatever is covering the thing that just changed. The drawer sits over the preview, so leaving it open hides the only visible effect of the press; at full size the file *is* the screen, so closing would throw that effect away.
+
+**And a superseded version is tiled with a watermark.** The badge above the frame says which version is on screen; the watermark says it *on* the document, because the failure case is a screenshot, a print or a glance away — none of which carry a label outside the frame. The **current** file carries none: a mark on every document would make the whole register look like a draft, and a mark that is on everything stops being read. The condition is `shownVersion === null`, the same value the badge, the URL and the preview request read, so the four cannot disagree about which version this is. It is one repeating `background-image` built from an inline SVG rather than a grid of rotated nodes: one element, crisp at any zoom, and the only form that works over an `<iframe>`, whose content nothing on this page can draw inside. The layer is `pointer-events-none`, so the document underneath still scrolls, selects and clicks.
+
+> **Trap.** The tile goes in a CSS `url("…")`, so the SVG uses single-quoted attributes and the whole string is `encodeURIComponent`'d — a double quote would close the url early and a raw `#` would be read as a fragment. Both fail by producing *no background at all* rather than an error, which is the kind of breakage nobody notices until a screenshot turns up without its watermark.
+
+> **Trap.** The watermark is slate, not red, even for a superseded version. The badge and the field ring carry that alarm; a red wash over a page of text makes the text harder to read, which is the opposite of what somebody checking an old version needs.
+
+**Which version a reader is looking at lives in the URL, always.** `documents/show` reads `?version=` on mount and writes it back with `history.replaceState` — including for the current version, so a document opened without one ends up naming the version it is showing. A reload, a bookmark or a pasted link therefore still shows the version that was being read; silently handing back the current file is the one outcome versioning exists to prevent. The parameter is written for the *current* version too because a bare document URL otherwise means "whatever is current when you open it", so a link shared today quietly becomes a link to different bytes after somebody replaces the file. A reader who wants "whatever is latest" deletes the parameter. The number drawn and the number current are tracked separately, since while an older version is on screen the descriptor's `version` is that older one. `replaceState` rather than an Inertia visit, because the page's props do not change when the preview does and a visit would re-render the trail and the recipient list to alter a query string; Inertia's own history state is passed through untouched. A version the file does not have falls back to the current file *and clears the parameter*, rather than leaving an empty frame under an address bar that still claims a version.
+
+`test_a_superseded_version_answers_what_the_current_version_answers` holds the line differentially: for every kind of viewer and both dispositions, `?version=1` must answer exactly what the current version answers. It asserts the property rather than a list of status codes, so it cannot rot.
+
+> **A reclassification protects the history for free.** `effectiveVisibility()` reads the file's own visibility and its ancestors', so marking a file confidential — or moving it into a confidential folder — closes its whole history at the same moment. Do not "optimise" this by caching a version's visibility when it is superseded.
+
+### Who may replace
+
+`FileManager::mayReplace()` is the one source for both the refusal and the `can.replace` flag on a file row, so a button and a 422 cannot disagree.
+
+Two conditions: `FileAbility::Rename` on the file, **and**, when the file carries a tracking code, that the actor owns the document.
+
+> **Trap, and the most security-relevant line here.** `Rename` is reachable through a share — `ShareAbility::Manage` carries it. Without the second condition, anybody holding a manage share could swap the bytes that a tracking code *printed on a folder* names, keeping the code, the label and the link intact, and the uploader would never have approved the content their name sits beside. There is deliberately **no** `FileAbility::Replace`: no grant source wants to express "may replace" independently of "may write", and an ability nothing distinguishes is the dormant-capability lie this file warns about elsewhere.
+
+### Reverting goes forward
+
+Reverting to version 1 **copies it forward** as the next version rather than moving the pointer back, so the history stays append-only and still reads as a true sequence of what the file was over time. `version_reverted_from` records what it is a copy of.
+
+A revert runs no upload-policy check, deliberately: these bytes satisfied the policy once, and re-checking would let a policy tightened since make a file's own history unrevertable — a settings change deciding something about the past.
+
+### Two things that must not be forgotten
+
+1. **`FileStorage::delete()` unlinks every version's bytes.** `file_versions.file_id` cascades, so a purge drops the version *rows* by itself — which is exactly the danger: without this the rows vanish while their bytes stay on disk, referenced by nothing that could ever find them again. Covered by `test_a_purge_removes_every_versions_bytes`.
+2. **`replace()` takes `lockForUpdate()` on the row.** Two replacements arriving together would both read version 1 and both try to become version 2. `unique(file_id, version)` turns that into a failed insert rather than a corrupted history; the lock turns it into a correct version 3. Both, not either.
+
+Beyond those, `PurgeTrashedFiles::reasonToKeep()` needed **no** new clause, and the `(folder_id, name)` index needed no change — see the retraction below.
+
+### What the old note predicted, and what actually happened
+
+This section replaced one titled *"Built to allow versioning later, not built for it"*. Its inventory of what already helped was right — `storage_path` derived from `public_id`, one path builder, `documents.file_id` as the whole document→bytes link, a keyless subject morph, morph-based shares, one service with transactions and audit rows, a stored checksum. Two of its predictions were wrong, and both are worth recording so nobody goes looking for a change that never happened:
+
+- It said **"a current-version pointer has to be the thing `(folder_id, name)` is unique over"**. That assumed a `files` row per version, which would indeed have broken the index, since versions share a name by definition. Making the current row *be* the pointer avoids the question entirely: the index is untouched.
+- It said **`PurgeTrashedFiles::reasonToKeep()` would need a clause** for "a later version points at it". It does not — a version cannot outlive its file. The clause that *was* needed is in `FileStorage::delete()`, above.
+
+Its trap has been narrowed rather than kept. It said a version action "belongs in `activity_logs` only". That holds for an untracked file; for a **tracked document** the file *is* the document, so a replacement also writes `DocumentAction::FileReplaced` — see `documents.md`. The crossover is written directly by `FileManager::replace()`, not through `FileEventRecorder::DOCUMENT_EQUIVALENTS`, which stays at two entries.
+
+### Retention, stated plainly
+
+Every version is kept indefinitely. **Nothing prunes them**: `files:purge --orphans` only knows `files` rows, so a superseded version's bytes are reclaimed only when the whole file is purged. Storage therefore grows with every replacement. That is a deliberate choice for a document register, and if it ever needs changing, a pruning flag on an audit trail is the most dangerous kind of capability to add quietly.
+
+Pre-existing orphans — the rows the old replacement left behind — are **unattributable by construction** and are swept rather than adopted as version 1. The old `update()` wrote nothing to either trail and overwrote `documents.file_name`, so nothing records which document a given orphan belonged to; all of one uploader's tracked documents for a year sit in one folder, and `created_at` can only order them. Inventing that linkage would put a fabricated version 1 under a real tracking code.
 
 ## Testing
 
