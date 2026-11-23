@@ -39,6 +39,16 @@ export default defineComponent({
         id: { type: [Number, String], default: null },
         /** What to render when there is no name at all. */
         fallback: { type: String, default: '—' },
+        /**
+         * Whether to mark the viewer's own name at all.
+         *
+         * False where the surrounding screen has already said it — the
+         * register's "Uploaded by me" tab, where every row is yours, so a
+         * marker on each one is noise rather than information. The same
+         * reasoning the "Shared with you" badge uses: a badge on every row
+         * of a list that is entirely one thing says nothing.
+         */
+        mark: { type: Boolean, default: true },
     },
     setup(props) {
         const page = usePage();
@@ -47,6 +57,8 @@ export default defineComponent({
         const subject = computed(() => props.id ?? props.person?.id ?? null);
 
         const isYou = computed(() => {
+            if (! props.mark) return false;
+
             const viewer = page.props?.auth?.user ?? null;
 
             // Both halves must exist. A guest is nobody, and a row with no

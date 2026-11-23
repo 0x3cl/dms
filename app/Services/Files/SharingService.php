@@ -324,6 +324,30 @@ class SharingService
         if ($ability->documentOnly() && ! $subject instanceof Document) {
             throw new RuntimeException('Only a tracked document\'s link can be restricted to the people who already have access.');
         }
+
+        /*
+         * And only where the document *is* a list of names.
+         *
+         * The term says "the uploader and the people tagged on this
+         * document". That is a narrowing of a private document and a
+         * contradiction of a public one: to mean anything on a public
+         * document it would have to close the register and the printed
+         * tracking code too, and a public document is public — a document
+         * that should be for named people is filed as private, which is what
+         * the level is for.
+         *
+         * It was briefly offered at every level, with the resolver treating
+         * a live restricted link as a condition laid over an open document.
+         * The office reversed it: the link's terms describe the URL, and the
+         * level describes who may read. Refused here rather than only in the
+         * dialog, because an option a page merely hides is a rule only the
+         * page keeps.
+         */
+        if ($ability->documentOnly()
+            && $subject instanceof Document
+            && ! $subject->visibility->restrictedToNamedPeople()) {
+            throw new RuntimeException('Only a private or confidential document can have a restricted link. A public document is open to everyone who has its tracking code.');
+        }
     }
 
     /**

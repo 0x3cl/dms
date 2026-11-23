@@ -537,9 +537,15 @@ export default defineComponent({
                                              beside it is matched on the live
                                              account's id, which is the only thing
                                              that means the same in both. -->
+                                        <!-- Marked only on All. On "Uploaded by
+                                             me" and on Deleted every row is
+                                             yours, so the tab has already said
+                                             it and a marker on each row is
+                                             noise. -->
                                         <PersonName
                                             :id="document.user?.id"
                                             :name="document.uploader_name"
+                                            :mark="filters.tab === 'all'"
                                             class="block text-sm font-semibold text-slate-800" />
                                         <span class="mt-0.5 block whitespace-nowrap text-xs text-slate-500">{{ formatTimestamp(document.created_at) }}</span>
                                     </div>

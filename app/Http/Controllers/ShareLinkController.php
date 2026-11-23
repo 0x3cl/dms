@@ -124,10 +124,32 @@ class ShareLinkController extends Controller
          * gate above now answers first, and this only decides *which page* a
          * reader who is already through it should be looking at.
          */
-        if ($item instanceof Document
-            && $request->user() !== null
-            && $this->access->allows($request->user(), $item, FileAbility::View)) {
-            return redirect()->route('documents.view', ['code' => $item->code]);
+        if ($item instanceof Document && $request->user() !== null) {
+            /*
+             * The token travels with them when it is the thing granting
+             * access.
+             *
+             * Somebody the document itself admits — the uploader, a tagged
+             * reader — needs no token and is sent the clean URL, which is
+             * the page they would have reached from the register. Somebody
+             * holding a bearer link to a document they are not tagged on has
+             * a real grant that `documents.view` cannot see without it, and
+             * they used to be left on the share card: the one page in the
+             * system that shows a tracked document without saying it is one,
+             * with no code, no classification and no uploader. Coming in
+             * with an account should never be a worse page than coming in
+             * without one.
+             *
+             * What the token buys there is exactly what it buys here — the
+             * bytes on the link's term — and nothing else: no trail, no
+             * thread, no version history. `DocumentController::showPayload()`
+             * is where that is enforced.
+             */
+            if ($this->access->allows($request->user(), $item, FileAbility::View)) {
+                return redirect()->route('documents.view', ['code' => $item->code]);
+            }
+
+            return redirect()->route('documents.view', ['code' => $item->code, 'token' => $link->token]);
         }
 
         // A document's link opens the document, and its bytes are the file

@@ -543,7 +543,7 @@ class DocumentController extends Controller
     /**
      * A document by its tracking code — what a scanned QR label resolves to.
      */
-    public function view(string $code): Response|RedirectResponse
+    public function view(Request $request, string $code): Response|RedirectResponse
     {
         /*
          * A guest is sent to the public door, not to a sign-in form.
@@ -566,6 +566,23 @@ class DocumentController extends Controller
         $document = Document::with(['user:id,name', 'recipients:id,name'])
             ->where('code', $code)
             ->firstOrFail();
+
+        /*
+         * The link the reader may be standing on.
+         *
+         * Resolved before the refusal, because a signed-in person holding a
+         * view or download link to a document they are not tagged on has a
+         * real grant — it is simply not the document's own rule. They used to
+         * be left on the share card, which is the one page in the system that
+         * shows a tracked document without saying it is one: no code, no
+         * classification, no uploader. Coming in with an account should never
+         * be a worse page than coming in without one.
+         */
+        $link = $this->viewerLink($request, $document);
+
+        if (! $this->isAuthorized($document) && $link !== null) {
+            return Inertia::render('documents/show', $this->showPayload($document, $link));
+        }
 
         if (! $this->isAuthorized($document)) {
             /*
@@ -1184,7 +1201,12 @@ class DocumentController extends Controller
      */
     public function preview(Request $request, Document $document): JsonResponse
     {
-        abort_unless($this->isAuthorized($document), 404);
+        // Or the link they came in on — see viewerLink(). The resolver is
+        // what reads it, so this is the same gate with the same answer, not
+        // a second one beside it.
+        $link = $this->viewerLink($request, $document);
+
+        abort_unless($this->isAuthorized($document) || $link !== null, 404);
 
         $file = $document->file;
 
@@ -1228,7 +1250,13 @@ class DocumentController extends Controller
             version: $bytes->versionNumber(),
         );
 
-        return response()->json($this->preview->describe($file, $request->user(), version: $bytes));
+        /*
+         * Described **through the link** when that is the grant, which is
+         * what points `src` and `download_url` at `/s/{token}/file` instead
+         * of the session-bound route — the one that would refuse this reader
+         * — and what resolves `can_download` to the link's own term.
+         */
+        return response()->json($this->preview->describe($file, $request->user(), $link, version: $bytes));
     }
 
     /**
@@ -1246,6 +1274,15 @@ class DocumentController extends Controller
      */
     public function versions(Request $request, Document $document): JsonResponse
     {
+        /*
+         * Deliberately **not** opened to a link holder.
+         *
+         * "This was revised four times, by these people, for these reasons"
+         * is a disclosure about the document, and a share link reaches the
+         * current version only — widening it to the history would widen
+         * every token already in circulation. The page hides the panel for
+         * the same reason; this is the half that enforces it.
+         */
         abort_unless($this->isAuthorized($document), 404);
 
         $file = $document->file;
@@ -1287,13 +1324,27 @@ class DocumentController extends Controller
      */
     public function accessFile(Request $request, Document $document, string $action): StreamedResponse|BinaryFileResponse|RedirectResponse
     {
-        if (! $this->isAuthorized($document)) {
+        $link = $this->viewerLink($request, $document);
+
+        /*
+         * A link holder is held to the link's own term here, not to the
+         * reader's set: a `view` link carries no copy, so asking this route
+         * for one is refused even though the same person may open the file.
+         * The resolver answers both halves; `accessFile` only has to ask the
+         * right ability.
+         */
+        if ($link !== null) {
+            $needed = $action === 'download' ? FileAbility::Download : FileAbility::View;
+
+            abort_unless($this->access->allows($request->user(), $document, $needed, $link), 404);
+        } elseif (! $this->isAuthorized($document)) {
             // The same two refusals as the page, in the words this route needs.
             // A reader who was taken off has to be told so wherever they hit
             // the wall, or they learn it on one screen and not the other.
-            return $this->unauthorizedRedirect($document->wasRemovedAsViewer(Auth::user())
-                ? 'You were removed as a viewer of this document, so its file can no longer be opened.'
-                : 'This document is restricted to the people tagged on it, so its file cannot be opened.');
+            return $this->unauthorizedRedirect(match ($document->refusalReason(Auth::user())) {
+                'removed' => 'You were removed as a viewer of this document, so its file can no longer be opened.',
+                default => 'This document is restricted to the people tagged on it, so its file cannot be opened.',
+            });
         }
 
         /*
@@ -1396,9 +1447,18 @@ class DocumentController extends Controller
      *
      * @return array<string, mixed>
      */
-    private function showPayload(Document $document): array
+    private function showPayload(Document $document, ?ShareLink $link = null): array
     {
-        $manages = $this->owns($document);
+        /*
+         * A link holder never manages, whatever the link says.
+         *
+         * `ShareAbility::linkable()` already refuses `manage` on a link, so
+         * this is belt and braces — but the uploader-only half of this
+         * payload is the share panel, the removed-viewer list and the QR
+         * symbol that *is* the credential, and none of those may be handed
+         * to somebody whose whole claim is a URL.
+         */
+        $manages = $link === null && $this->owns($document);
 
         /*
          * A label has to point at a link, so the uploader's view mints one if
@@ -1437,7 +1497,21 @@ class DocumentController extends Controller
              * On a long-running document that is a payload nobody reads the
              * bottom of, growing without limit.
              */
+            /*
+             * Empty for a link holder, and empty rather than absent.
+             *
+             * A document's travel history is exactly as sensitive as the
+             * document — a trail listing who received a case file is a
+             * disclosure of its own — and a share link grants *the bytes*,
+             * never the record of who else has held them. The same goes for
+             * the thread and the version history below.
+             *
+             * The paginator shape is kept so the page has one contract: a
+             * prop that is sometimes a paginator and sometimes null is a
+             * second shape for every reader of it to remember.
+             */
             'logs' => $document->logs()
+                ->when($link !== null, fn ($query) => $query->whereRaw('1 = 0'))
                 ->trail($trailFilters)
                 ->paginate(DocumentLogController::perPage($request), ['*'], 'logs')
                 ->withQueryString(),
@@ -1468,6 +1542,7 @@ class DocumentController extends Controller
              * at a different one.
              */
             'comments' => $document->comments()
+                ->when($link !== null, fn ($query) => $query->whereRaw('1 = 0'))
                 ->with('user:id,name,profile_image,avatar_seed')
                 ->get()
                 ->map(fn ($comment): array => [
@@ -1502,7 +1577,22 @@ class DocumentController extends Controller
                     'can_delete' => $comment->user_id !== null
                         && ((int) $comment->user_id === (int) request()->user()?->id || $manages),
                 ])->all(),
-            'commentsEnabled' => (bool) $document->comments_enabled,
+            // Off for a link holder: a share-link visitor may not comment —
+            // an unverified name in a thread of real ones is a statement
+            // somebody may act on — and an account reached through a link is
+            // still here on the link's authority, not the document's.
+            'commentsEnabled' => $link === null && (bool) $document->comments_enabled,
+            /*
+             * Here on a link rather than on the document's own rule.
+             *
+             * The page needs it for two different things: to hide what the
+             * link does not carry, and to send the token back with the
+             * requests that fetch the bytes — the descriptor and Download
+             * both resolve through `AccessResolver`, which cannot see a
+             * token that is not in the request.
+             */
+            'viaLink' => $link !== null,
+            'linkToken' => $link?->token,
             /*
              * The QR Tracker, as SVG markup for the modal to render inline.
              *
@@ -1546,6 +1636,16 @@ class DocumentController extends Controller
              */
             'links' => $manages ? $this->linkPayload($document) : [],
             /*
+             * The directory, for the share dialog's recipient picker.
+             *
+             * To the uploader alone, and for the same reason `links` is:
+             * everything on this side of the payload is the uploader's own
+             * controls. It is the same list the upload and edit forms carry,
+             * from the same `taggablePeople()`, so the three cannot offer
+             * different people.
+             */
+            'taggable' => $manages ? $this->taggablePeople(Auth::user())->all() : [],
+            /*
              * The viewers taken off, to the uploader only.
              *
              * It is the uploader's own record of a decision they made, and the
@@ -1565,7 +1665,17 @@ class DocumentController extends Controller
                 : [],
             'can' => [
                 'manage' => $manages,
-                'download' => true,
+                /*
+                 * The link's own term, where there is one.
+                 *
+                 * `true` is right for a reader admitted by the document —
+                 * `READER_ABILITIES` carries download, and the uploader has
+                 * everything — but a **view** link deliberately carries no
+                 * copy, and the button has to say so rather than offering
+                 * one the stream route then refuses.
+                 */
+                'download' => $link === null
+                    || $this->access->allows(request()->user(), $document, FileAbility::Download, $link),
                 // Two conditions, and they are different questions: may this
                 // person share at all, and may *this document* be shared by
                 // link. A confidential document refuses the second however
@@ -1634,6 +1744,11 @@ class DocumentController extends Controller
             'ability' => ['required', Rule::in(ShareAbility::linkableValues())],
             'expires_at' => ['nullable', 'date', 'after:now'],
             'max_views' => ['nullable', 'integer', 'min:1', 'max:10000'],
+            // Absent means "leave the list alone"; present means the dialog
+            // offered the picker and this is the whole list. See
+            // tagFromLinkDialog().
+            'recipients' => ['sometimes', 'array'],
+            'recipients.*' => ['integer', 'exists:users,id'],
         ]);
 
         // One live link per document — the page offers Change when there is
@@ -1658,6 +1773,15 @@ class DocumentController extends Controller
         DocumentLog::record($document, DocumentAction::LinkShared, $request->user(), $link->ability->label().' link created', $request->ip());
 
         $this->refreshLabel($document);
+
+        // After the rows are committed, never inside: a notification sent in
+        // a transaction that then rolls back is a message about something
+        // that did not happen.
+        $notify = $this->tagFromLinkDialog($request, $document, $validated);
+
+        if ($notify->isNotEmpty()) {
+            Notification::send($notify, new PrivateDocumentShared($document, $request->user()));
+        }
 
         return back()->with('success', 'Share link created: '.$link->url());
     }
@@ -1700,6 +1824,11 @@ class DocumentController extends Controller
             'ability' => ['required', Rule::in(ShareAbility::linkableValues())],
             'expires_at' => ['nullable', 'date', 'after:now'],
             'max_views' => ['nullable', 'integer', 'min:1', 'max:10000'],
+            // Absent means "leave the list alone"; present means the dialog
+            // offered the picker and this is the whole list. See
+            // tagFromLinkDialog().
+            'recipients' => ['sometimes', 'array'],
+            'recipients.*' => ['integer', 'exists:users,id'],
         ]);
 
         $this->sharing->updateLink(
@@ -1712,7 +1841,57 @@ class DocumentController extends Controller
 
         DocumentLog::record($document, DocumentAction::LinkShared, $request->user(), 'Share link terms changed', $request->ip());
 
+        $notify = $this->tagFromLinkDialog($request, $document, $validated);
+
+        if ($notify->isNotEmpty()) {
+            Notification::send($notify, new PrivateDocumentShared($document, $request->user()));
+        }
+
         return back()->with('success', 'Share link updated.');
+    }
+
+    /**
+     * Tag people from the share dialog, when the term needs a list.
+     *
+     * **This is not a third place to grant access.** The rule is that
+     * sharing is granted where the thing is made, and the edit form is that
+     * form reopened; this is the same again, for the one moment that
+     * *creates the need*. Choosing `restricted` on a public document says
+     * "only the people tagged on this" — and a public document usually has
+     * nobody tagged, so the control, taken alone, closes the document to its
+     * uploader and to literally nobody else. Making somebody leave the
+     * dialog, find the edit form and come back is how a document ends up
+     * sealed with an empty list and a confused office.
+     *
+     * The whole list is on screen while they change it, which is the
+     * property the old share panel's picker lacked and the reason that one
+     * was removed. Everything underneath is the edit form's own path: a
+     * **diff**, so a link edit that does not touch the list re-notifies
+     * nobody; removals through `revokeViewer()`, so a dropped viewer is
+     * revoked rather than deleted and the next refusal can still tell them
+     * apart; additions through `DocumentRegistrar::tag()`, which is where
+     * clearing `revoked_at` on re-tagging lives.
+     *
+     * Absent from the payload means "leave the list alone", which is what
+     * every other caller of these endpoints sends.
+     *
+     * @return \Illuminate\Database\Eloquent\Collection<int, User> the people to notify, after commit
+     */
+    private function tagFromLinkDialog(Request $request, Document $document, array $validated): \Illuminate\Database\Eloquent\Collection
+    {
+        if (! array_key_exists('recipients', $validated)) {
+            return User::query()->whereRaw('1 = 0')->get();
+        }
+
+        $current = $document->recipients()->pluck('users.id')->all();
+        $wanted = array_map('intval', $validated['recipients'] ?? []);
+
+        return DB::transaction(fn () => $this->syncRecipients(
+            $document,
+            array_values(array_diff($wanted, $current)),
+            array_values(array_diff($current, $wanted)),
+            $request,
+        ));
     }
 
     /**
@@ -1820,6 +1999,42 @@ class DocumentController extends Controller
     }
 
     /**
+     * The share link this request is standing on, if any.
+     *
+     * A signed-in person holding a view or download link to a document they
+     * are not tagged on is sent **into this module** rather than to the share
+     * card — the card is a worse version of the page they can have, with no
+     * details and no classification — and the token comes with them so the
+     * one thing granting them access is still in the request. The resolver
+     * does the whole job from there: `fromLink()` checks the link is usable,
+     * that it covers *this* document, that the document may still be linked
+     * at all, and what the term means. Nothing here restates any of that.
+     *
+     * Null for a token that is missing, unknown, revoked, expired, spent,
+     * pointed at another document, or restricted and held by somebody it is
+     * not for. Every one of those answers the same way, which is the rule a
+     * bearer URL lives by.
+     */
+    private function viewerLink(Request $request, Document $document): ?ShareLink
+    {
+        $token = $request->string('token')->toString();
+
+        if ($token === '') {
+            return null;
+        }
+
+        $link = $this->sharing->resolveLink($token);
+
+        if ($link === null) {
+            return null;
+        }
+
+        return $this->access->allows($request->user(), $document, FileAbility::View, $link)
+            ? $link
+            : null;
+    }
+
+    /**
      * Refuse a read, and — when there is something to ask for — say so.
      *
      * The redirect and the `error` flash are unchanged, because
@@ -1852,13 +2067,12 @@ class DocumentController extends Controller
      */
     private function refusalMessage(Document $document): string
     {
-        if ($document->wasRemovedAsViewer(Auth::user())) {
-            return 'You were removed as a viewer of this document. '
-                .'Ask the person who uploaded it if you still need access.';
-        }
-
-        return 'This document is restricted to the people tagged on it. '
-            .'Ask the person who uploaded it to add you.';
+        return match ($document->refusalReason(Auth::user())) {
+            'removed' => 'You were removed as a viewer of this document. '
+                .'Ask the person who uploaded it if you still need access.',
+            default => 'This document is restricted to the people tagged on it. '
+                .'Ask the person who uploaded it to add you.',
+        };
     }
 
     /**

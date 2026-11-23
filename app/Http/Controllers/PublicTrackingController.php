@@ -139,7 +139,17 @@ class PublicTrackingController extends Controller
      */
     private function resultFor(Request $request, Document $document): array
     {
-        $open = ! $document->visibility->restrictedToNamedPeople();
+        /*
+         * The effective restriction, not the level.
+         *
+         * A public document sealed by a live `restricted` link is closed to
+         * everybody but its named list, and this page is one of the two
+         * doors the level used to leave open — so asking the level here
+         * would describe and preview a document the resolver has just
+         * refused. `Document::restrictsToNamedPeople()` is the one place
+         * that question is answered.
+         */
+        $open = ! $document->restrictsToNamedPeople();
 
         // The restricted shape is stated once, on the model, because the
         // share-link page answers the same question for a link whose

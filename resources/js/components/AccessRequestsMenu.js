@@ -65,6 +65,50 @@ export default defineComponent({
             if (isOpen) load();
         });
 
+        /*
+         * Opened by the notification that is about it.
+         *
+         * A bell row saying "Emilio is asking to open ADOR-20261123-0001" is
+         * a thing to answer, and clicking it used to land on the document
+         * register with nothing about the request on screen — the reader had
+         * to work out for themselves that the answer lives behind a header
+         * icon. `DocumentAccessRequested` has always carried
+         * `?requests=incoming` on its URL and nothing read it; this is the
+         * half that was missing, which means every notification already sent
+         * starts working rather than only the ones sent from now on.
+         *
+         * The tab comes from the parameter rather than being assumed, so a
+         * later notification can point at a different one — a decision on
+         * something you asked for belongs in Outgoing, not Incoming.
+         *
+         * It runs on every navigation, not only on mount: the menu lives in
+         * AdminShell, which persists across Inertia visits, so a mounted hook
+         * would fire once per full page load and never again.
+         */
+        const openFromUrl = () => {
+            if (! permitted.value) return;
+
+            const asked = new URLSearchParams(window.location.search).get('requests');
+
+            if (! asked) return;
+
+            tab.value = ['incoming', 'granted', 'outgoing'].includes(asked) ? asked : 'incoming';
+            open.value = true;
+
+            /*
+             * The parameter is cleared once it has been acted on, so a
+             * reload or a Back does not reopen a panel somebody has just
+             * closed. `replaceState`, not an Inertia visit: the page is
+             * already the right one and a visit would refetch it.
+             */
+            const url = new URL(window.location.href);
+            url.searchParams.delete('requests');
+            window.history.replaceState({}, '', url);
+        };
+
+        openFromUrl();
+        router.on('navigate', openFromUrl);
+
         /**
          * Grant or decline.
          *

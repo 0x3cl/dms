@@ -138,9 +138,53 @@ class NotificationController extends Controller
         $notification = Auth::user()->notifications()->findOrFail($id);
         $notification->markAsRead();
 
-        // A notification whose payload predates the `url` key still has to go
-        // somewhere, so fall back to the dashboard rather than redirect(null).
-        return redirect($notification->data['url'] ?? route('dashboard'));
+        return redirect(self::destinationFor($notification->data ?? []));
+    }
+
+    /**
+     * Where a row takes its reader.
+     *
+     * The stored `url`, unless it is missing or is the bare dashboard — in
+     * which case the **kind** answers, exactly as `legacyKind()` reads an
+     * older row's kind out of its structure rather than its sentence. The
+     * dashboard is not a destination: it names neither the document nor the
+     * decision, so a reader who clicks "your request was declined" and lands
+     * there has been told nothing and given nothing to do.
+     *
+     * Deriving it means every notification *already sent* starts working,
+     * which is the whole point: a fix that only applies to rows written from
+     * now on leaves a bell full of links that go nowhere.
+     *
+     * A kind nothing matches keeps the dashboard, because a wrong
+     * destination is worse than a neutral one.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private static function destinationFor(array $data): string
+    {
+        $stored = $data['url'] ?? null;
+        $dashboard = route('dashboard');
+
+        if ($stored !== null && $stored !== $dashboard) {
+            return $stored;
+        }
+
+        return match (NotificationKind::tryFrom($data['kind'] ?? '') ?? self::legacyKind($data)) {
+            // Somebody is asking to be let in: the panel that can answer.
+            NotificationKind::AccessRequested => route('documents.index').'?requests=incoming',
+            // A refusal: their own list, where the answer and its note are.
+            NotificationKind::AccessDeclined => route('documents.index').'?requests=outgoing',
+            /*
+             * `shared` and `access_granted` are deliberately absent.
+             *
+             * Both are about one document and both already store its URL, so
+             * they never reach this fallback — and there is nothing here to
+             * rebuild one from: the code is interpolated into the sentence,
+             * never kept as a field, and reading an identifier back out of
+             * prose is an invention rendered as a record.
+             */
+            default => $dashboard,
+        };
     }
 
     /**

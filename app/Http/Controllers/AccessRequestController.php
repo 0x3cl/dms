@@ -106,7 +106,10 @@ class AccessRequestController extends Controller
 
         if (! $document
             || $document->user_id === $user->id
-            || ! $document->visibility->restrictedToNamedPeople()
+            // The effective restriction, so a public document sealed by a
+            // restricted link can be asked about: there is a named list to
+            // be added to, which is the whole question this endpoint asks.
+            || ! $document->restrictsToNamedPeople()
             || $this->access->allows($user, $document, FileAbility::View)
         ) {
             return $refusal();

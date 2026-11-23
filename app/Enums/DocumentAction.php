@@ -43,6 +43,28 @@ enum DocumentAction: string
     case LinkRegenerated = 'link_regenerated';
     case LinkRevoked = 'link_revoked';
 
+    /**
+     * The document's level was changed.
+     *
+     * **Nothing writes this any more, and it must not be removed.** It was
+     * written by a short-lived implementation in which choosing the
+     * `restricted` link term reclassified a public document to private;
+     * that was reversed in favour of a condition laid *over* the level, so
+     * no code path produces it today.
+     *
+     * The case stays because `document_logs.action` is a stored column and
+     * this enum is what reads it. Deleting a case does not delete the rows
+     * holding its value — it makes them unreadable, and the next person to
+     * open that document's trail gets `"reclassified" is not a valid
+     * backing value`, which took the whole page down rather than degrading.
+     * An audit trail is a record of what happened; the vocabulary for
+     * reading it can only ever grow.
+     *
+     * Not `postable()`, and never was: the system observes a
+     * reclassification, and a client claiming one does not make it true.
+     */
+    case Reclassified = 'reclassified';
+
     /*
      * Adding and taking away a named viewer on a restricted document. Written
      * by the system when the uploader does it, never postable: "who may read
@@ -116,6 +138,7 @@ enum DocumentAction: string
             self::Returned => 'Returned',
             self::LinkShared => 'Shared by link',
             self::LinkRegenerated => 'Share link address replaced',
+            self::Reclassified => 'Classification changed',
             self::LinkRevoked => 'Share link revoked',
             self::ViewerAdded => 'Viewer added',
             self::ViewerRemoved => 'Viewer removed',
@@ -137,6 +160,7 @@ enum DocumentAction: string
             self::Returned => 'fa-solid fa-rotate-left',
             self::LinkShared => 'fa-solid fa-link',
             self::LinkRegenerated => 'fa-solid fa-rotate',
+            self::Reclassified => 'fa-solid fa-shield-halved',
             self::LinkRevoked => 'fa-solid fa-link-slash',
             self::ViewerAdded => 'fa-solid fa-user-plus',
             self::ViewerRemoved => 'fa-solid fa-user-slash',
@@ -166,6 +190,7 @@ enum DocumentAction: string
             self::Acknowledged => 'bg-sky-100 text-[#07559e]',
             self::Returned => 'bg-amber-100 text-amber-600',
             self::LinkShared, self::LinkRegenerated => 'bg-violet-100 text-violet-600',
+            self::Reclassified => 'bg-amber-100 text-amber-700',
             // Violet with the link share: giving somebody the document is one
             // act whether it is done by name or by URL.
             self::ViewerAdded => 'bg-violet-100 text-violet-600',

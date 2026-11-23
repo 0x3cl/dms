@@ -183,4 +183,133 @@ class NotificationFeedTest extends TestCase
         $this->assertNull($item['actor']);
         $this->assertStringContainsString($stranger->name, $item['message']);
     }
+
+    /**
+     * Every notification goes somewhere it can be acted on.
+     *
+     * Clicking a row redirects to the `url` in its payload, and two of the
+     * three kinds were pointing at pages that say nothing about them. A
+     * request to be let in landed on the plain document register — the
+     * answer lives behind a header icon, and the reader had to work that out
+     * — and a refusal landed on the dashboard, which names neither the
+     * document nor the note from whoever refused it.
+     *
+     * Both now carry `?requests=`, which `AccessRequestsMenu` reads to open
+     * the panel on the right tab. The parameter was already on the first
+     * one and read by nothing, so every notification already sent starts
+     * working rather than only the ones written from now on.
+     */
+    public function test_each_notification_points_at_something_actionable(): void
+    {
+        [$document, $uploader] = $this->sharedDocument();
+        $asker = User::factory()->create();
+
+        // Shared with you: the document itself.
+        $asker->notify(new PrivateDocumentShared($document, $uploader));
+        $this->assertStringContainsString(
+            "/documents/view/{$document->code}",
+            $asker->notifications()->where('data->kind', NotificationKind::Shared->value)->sole()->data['url'],
+        );
+
+        // Somebody is asking: the panel that can answer, on Incoming.
+        $request = AccessRequest::open($document, $asker, null);
+        $uploader->notify(new DocumentAccessRequested($request));
+        $this->assertStringContainsString(
+            'requests=incoming',
+            $uploader->notifications()->where('data->kind', NotificationKind::AccessRequested->value)->sole()->data['url'],
+        );
+
+        // Declined: their own list, where the answer and its note are.
+        $request->update([
+            'status' => \App\Enums\AccessRequestStatus::Denied,
+            'decided_by' => $uploader->id,
+            'decided_by_name' => $uploader->name,
+            'decided_at' => now(),
+        ]);
+        $asker->notify(new \App\Notifications\DocumentAccessDecided($request->fresh()));
+        $this->assertStringContainsString(
+            'requests=outgoing',
+            $asker->notifications()->where('data->kind', NotificationKind::AccessDeclined->value)->sole()->data['url'],
+        );
+
+        // Granted: the document, because now they can open it.
+        $request->update(['status' => \App\Enums\AccessRequestStatus::Granted]);
+        $asker->notify(new \App\Notifications\DocumentAccessDecided($request->fresh()));
+        $this->assertStringContainsString(
+            "/documents/view/{$document->code}",
+            $asker->notifications()->where('data->kind', NotificationKind::AccessGranted->value)->sole()->data['url'],
+        );
+    }
+
+    /**
+     * And clicking one marks it read and goes there, in one request.
+     */
+    public function test_opening_a_notification_marks_it_read_and_redirects(): void
+    {
+        [$document, $uploader] = $this->sharedDocument();
+        $asker = User::factory()->create();
+
+        $uploader->notify(new DocumentAccessRequested(AccessRequest::open($document, $asker, null)));
+        $row = $uploader->notifications()->latest()->first();
+
+        $this->assertNull($row->read_at);
+
+        $this->actingAs($uploader)
+            ->get("/notifications/{$row->id}/read")
+            ->assertRedirect($row->data['url']);
+
+        $this->assertNotNull($row->fresh()->read_at);
+    }
+
+    /**
+     * A row already in somebody's bell is upgraded on the way out.
+     *
+     * Every refusal sent before this pointed at the dashboard, which names
+     * neither the document nor the note from whoever refused it. The kind is
+     * stored on the row, so the destination can be derived from it at read
+     * time — the same move `legacyKind()` makes for the icon, and for the
+     * same reason: a fix that only applies to rows written from now on
+     * leaves a bell full of links that go nowhere.
+     */
+    public function test_an_older_row_pointing_at_the_dashboard_is_sent_somewhere_useful(): void
+    {
+        [$document, $uploader] = $this->sharedDocument();
+        $asker = User::factory()->create();
+
+        $request = AccessRequest::open($document, $asker, null);
+        $request->update([
+            'status' => \App\Enums\AccessRequestStatus::Denied,
+            'decided_by' => $uploader->id,
+            'decided_by_name' => $uploader->name,
+            'decided_at' => now(),
+        ]);
+        $asker->notify(new \App\Notifications\DocumentAccessDecided($request->fresh()));
+
+        // Wound back to what such a row used to carry.
+        $row = $asker->notifications()->sole();
+        $row->forceFill(['data' => [...$row->data, 'url' => route('dashboard')]])->save();
+
+        $this->actingAs($asker)
+            ->get("/notifications/{$row->id}/read")
+            ->assertRedirect(route('documents.index').'?requests=outgoing');
+    }
+
+    /**
+     * And a row nothing can place keeps the dashboard.
+     *
+     * A wrong destination is worse than a neutral one, so a kind that
+     * matches nothing is not guessed at.
+     */
+    public function test_a_row_with_no_recognisable_kind_keeps_the_dashboard(): void
+    {
+        $user = User::factory()->create();
+        $user->notify(new PrivateDocumentShared(...$this->sharedDocument()));
+
+        $row = $user->notifications()->sole();
+        $row->forceFill(['data' => ['message' => 'Something happened.']])->save();
+
+        $this->actingAs($user)
+            ->get("/notifications/{$row->id}/read")
+            ->assertRedirect(route('dashboard'));
+    }
 }

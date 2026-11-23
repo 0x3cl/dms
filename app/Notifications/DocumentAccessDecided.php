@@ -39,9 +39,20 @@ class DocumentAccessDecided extends Notification
             'message' => $granted
                 ? "You can now open {$this->request->document_code}."
                 : "Your request to open {$this->request->document_code} was declined.",
+            /*
+             * Where the row takes its reader, and the two answers differ.
+             *
+             * A **yes** means they can open the document now, so the
+             * document is the point. A **no** sent them to the dashboard,
+             * which is a dead end: it says nothing about which request was
+             * refused, carries no note from whoever refused it, and leaves
+             * them nothing to do. Their own outgoing list has all three, so
+             * that is where a refusal belongs — the parameter opens the
+             * panel on that tab. See AccessRequestsMenu.
+             */
             'url' => $granted
                 ? route('documents.view', ['code' => $this->request->document_code])
-                : route('dashboard'),
+                : route('documents.index').'?requests=outgoing',
             'icon' => $granted ? 'fa-solid fa-lock-open' : 'fa-solid fa-circle-xmark',
             // A yes and a no are two kinds, not one with a flag: they are read
             // at a glance in a list, and the colour is the thing being read.

@@ -215,6 +215,34 @@ class Document extends Model
     }
 
     /**
+     * Why this reader is being refused — the reason, not the sentence.
+     *
+     * Two refusals, and reporting them as one is a worse answer than either.
+     * Somebody never tagged is told the document is restricted and invited
+     * to ask. Somebody the uploader *took off* is being told a decision was
+     * made about them — without that they go on asking the wrong person why
+     * a link that worked yesterday has stopped.
+     *
+     * The *reason* lives here and the *sentence* lives at each call site,
+     * because the three sites refuse three different things — the document,
+     * its file, its history — and each finishes the sentence its own way.
+     * What must not differ is which refusal a reader is given, which is the
+     * whole point of stating it once: a person must not learn they were
+     * removed on one screen and not on the other.
+     *
+     * There was briefly a third, `limited`, for a public document closed by
+     * a live restricted link. That scenario no longer exists — the term is
+     * refused anywhere but a private or confidential document — so the
+     * reason went with it rather than lingering as a case nothing reaches.
+     *
+     * @return 'removed'|'restricted'
+     */
+    public function refusalReason(?User $user): string
+    {
+        return $this->wasRemovedAsViewer($user) ? 'removed' : 'restricted';
+    }
+
+    /**
      * Who took a copy of the file, for /admin/download-logs.
      *
      * @return HasMany<DocumentDownload, $this>
@@ -272,6 +300,29 @@ class Document extends Model
     public function shareLinks(): MorphMany
     {
         return $this->morphMany(ShareLink::class, 'shareable');
+    }
+
+    /**
+     * Is this document readable only by the people named on it?
+     *
+     * The **level** answers, and it is the only thing that does. One place
+     * rather than `$document->visibility->restrictedToNamedPeople()` spelled
+     * out at each of the four sites that ask — the resolver's public clause,
+     * the public tracking page, the refusal wording and the access-request
+     * endpoint — because those four must never disagree about which
+     * documents have a named list.
+     *
+     * It briefly answered "the level **or** a live `restricted` share link",
+     * so that choosing the term closed a public document as a condition laid
+     * over its level. The office reversed that: the term is offered only on
+     * a private or confidential document now, and
+     * `SharingService::assertLinkable()` refuses it anywhere else. A link's
+     * terms describe the URL; the level describes who may read. A document
+     * that should be for named people is filed as private.
+     */
+    public function restrictsToNamedPeople(): bool
+    {
+        return $this->visibility->restrictedToNamedPeople();
     }
 
     public function isPublic(): bool
@@ -369,7 +420,11 @@ class Document extends Model
      */
     public function restrictedSummary(): array
     {
-        $grantable = $this->visibility->restrictedToNamedPeople();
+        // The *effective* restriction, not the level: a public document
+        // sealed by a restricted link has a named list somebody can be added
+        // to, and its code no longer opens it — so there is both something
+        // to ask for and a code that is safe to quote.
+        $grantable = $this->restrictsToNamedPeople();
 
         return [
             'code' => $grantable ? $this->code : null,

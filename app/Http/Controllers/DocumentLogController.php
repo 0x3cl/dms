@@ -103,9 +103,10 @@ class DocumentLogController extends Controller
             // A removed viewer gets told so here too: the trail is as
             // restricted as the document, so it is the same refusal and has to
             // give the same reason. See DocumentController::refusalMessage().
-            return back()->with('error', $document->wasRemovedAsViewer($request->user())
-                ? 'You were removed as a viewer of this document, so its history is closed to you.'
-                : 'You are not authorized to view this document.');
+            return back()->with('error', match ($document->refusalReason($request->user())) {
+                'removed' => 'You were removed as a viewer of this document, so its history is closed to you.',
+                default => 'You are not authorized to view this document.',
+            });
         }
 
         $filters = self::filters($request);

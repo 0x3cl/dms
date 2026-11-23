@@ -321,150 +321,6 @@ class ShareLinkRouteTest extends TestCase
     }
 
     /**
-     * The restricted term is available at **every** level, public included,
-     * and it means the named list wherever it is set.
-     *
-     * The dialog used to hide it on a public document, reasoning that
-     * "people who already have access" is everybody there — and the resolver
-     * agreed, because it answered the term by asking what the holder could
-     * do with no link at all. So the one control that says "only the people
-     * on this document" did nothing on exactly the documents somebody is
-     * most likely to be careless with. It resolves the **named audience**
-     * now: the uploader and the tagged list, whatever the level.
-     */
-    public function test_a_restricted_link_on_a_public_document_opens_for_nobody_else(): void
-    {
-        $owner = User::factory()->create();
-        $tagged = User::factory()->create();
-        $file = app(FileStorage::class)->store(
-            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
-            app(FolderService::class)->rootFor($owner),
-            $owner,
-        );
-        $document = Document::factory()->create([
-            'user_id' => $owner->id,
-            'file_id' => $file->id,
-            'file_name' => $file->original_name,
-            'visibility' => DocumentVisibility::Public,
-        ]);
-
-        $link = app(SharingService::class)->createLink($document, ShareAbility::Restricted, $owner);
-        $document->allRecipients()->syncWithoutDetaching([$tagged->id => ['notified_at' => now()]]);
-
-        Auth::logout();
-        $this->sayWhoYouAre($link);
-
-        // A holder with no account: the page states the classification and
-        // the bytes answer 404, exactly as on a private document.
-        $this->get("/s/{$link->token}")
-            ->assertOk()
-            ->assertInertia(fn ($page) => $page->component('track/index', false)
-                ->where('result.open', false));
-        $this->get("/s/{$link->token}/file")->assertNotFound();
-
-        // The named people still reach it — that is what the term addresses.
-        $this->actingAs($tagged)->get("/s/{$link->token}")->assertRedirect();
-        $this->actingAs($owner)->get("/s/{$link->token}")->assertRedirect();
-    }
-
-    /**
-     * A **signed-in** stranger is refused by the term too.
-     *
-     * The regression, and it was invisible in every test above because they
-     * all probed the link signed out. `show()` sends a reader who may open
-     * the document to the document rather than to a card about it, and that
-     * check asked the resolver with *no link* — which on a public document
-     * every account passes. Asked before the term, it was therefore the
-     * question that decided whether the URL opened: a link marked Restricted
-     * redirected anybody holding an account straight to the document it was
-     * closed to, while a guest on the same URL was correctly refused.
-     *
-     * Both halves are asserted, because the fix is an ordering and the way
-     * to get an ordering wrong is to fix one end of it. A tagged reader must
-     * still land on the document.
-     */
-    public function test_a_restricted_link_on_a_public_document_refuses_a_signed_in_stranger(): void
-    {
-        $owner = User::factory()->create();
-        $tagged = User::factory()->create();
-        $stranger = User::factory()->create();
-        $file = app(FileStorage::class)->store(
-            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
-            app(FolderService::class)->rootFor($owner),
-            $owner,
-        );
-        $document = Document::factory()->create([
-            'user_id' => $owner->id,
-            'file_id' => $file->id,
-            'file_name' => $file->original_name,
-            'visibility' => DocumentVisibility::Public,
-        ]);
-        $document->allRecipients()->syncWithoutDetaching([$tagged->id => ['notified_at' => now()]]);
-
-        $link = app(SharingService::class)->createLink($document, ShareAbility::Restricted, $owner);
-
-        // The stranger holds an account and the document is public, so the
-        // old check passed them. The term says otherwise.
-        $this->actingAs($stranger)->get("/s/{$link->token}")
-            ->assertOk()
-            ->assertInertia(fn ($page) => $page->component('track/index', false)
-                ->where('result.open', false));
-        $this->actingAs($stranger)->get("/s/{$link->token}/file")->assertNotFound();
-
-        // And the people the link is addressed to still get the document.
-        $this->actingAs($tagged)->get("/s/{$link->token}")
-            ->assertRedirect(route('documents.view', ['code' => $document->code]));
-    }
-
-    /**
-     * The refusal must not carry the way in.
-     *
-     * The page offered a "Request access" button, which was not a request at
-     * all — a plain navigation to `/documents/view/{code}`. On a document
-     * restricted to named people that page *is* the asking: it refuses and
-     * carries the form. On a **public** document closed only by its link's
-     * term, the level admits every account, so the identical button opened
-     * the document in full. It said "Request access" and delivered the
-     * document without one.
-     *
-     * The code went with it, and that is the same leak rather than a second
-     * one: on a public document the tracking code *is* the door, so printing
-     * it on the refusal was handing over the key beside the lock.
-     * `restrictedSummary()` withholds it wherever the level does not
-     * restrict, and `grantable` tells the page whether there is anything an
-     * uploader could grant — on a public document there is not, since a
-     * recipient row adds nothing to what everyone may already read.
-     */
-    public function test_a_restricted_links_refusal_offers_no_way_into_a_public_document(): void
-    {
-        $owner = User::factory()->create();
-        $stranger = User::factory()->create();
-        $file = app(FileStorage::class)->store(
-            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
-            app(FolderService::class)->rootFor($owner),
-            $owner,
-        );
-        $document = Document::factory()->create([
-            'user_id' => $owner->id,
-            'file_id' => $file->id,
-            'file_name' => $file->original_name,
-            'visibility' => DocumentVisibility::Public,
-        ]);
-        $link = app(SharingService::class)->createLink($document, ShareAbility::Restricted, $owner);
-
-        $this->actingAs($stranger)->get("/s/{$link->token}")
-            ->assertOk()
-            ->assertInertia(fn ($page) => $page->component('track/index', false)
-                ->where('result.open', false)
-                // Nothing to ask for, so nothing is offered.
-                ->where('result.grantable', false)
-                // And the code is not disclosed, in the result or beside it.
-                ->where('result.code', null)
-                ->where('code', null))
-            ->assertDontSee($document->code);
-    }
-
-    /**
      * Where the level *does* restrict, the refusal keeps both.
      *
      * The withholding above is about a code that opens the document by
@@ -503,13 +359,449 @@ class ShareLinkRouteTest extends TestCase
     }
 
     /**
+     * Every value the trail column can hold still reads.
+     *
+     * `document_logs.action` is a stored column and `DocumentAction` is what
+     * reads it, so deleting a case does not delete the rows holding its
+     * value — it makes them unreadable. Removing `reclassified` when the
+     * feature that wrote it was withdrawn did exactly that: the next request
+     * that touched one of those rows died with `"reclassified" is not a
+     * valid backing value`, and it took the whole page with it rather than
+     * degrading.
+     *
+     * So this asserts the property rather than a list: every distinct value
+     * the table holds must map to a case. It cannot rot as actions are
+     * added, and it fails the moment one is taken away while rows still
+     * carry it.
+     */
+    public function test_every_action_value_in_the_trail_still_maps_to_a_case(): void
+    {
+        $owner = User::factory()->create();
+        $file = app(FileStorage::class)->store(
+            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
+            app(FolderService::class)->rootFor($owner),
+            $owner,
+        );
+        $document = Document::factory()->create([
+            'user_id' => $owner->id,
+            'file_id' => $file->id,
+            'file_name' => $file->original_name,
+            'visibility' => DocumentVisibility::Public,
+        ]);
+
+        // Including the ones nothing writes any more: a withdrawn feature's
+        // rows are still in the table, and still have to render.
+        foreach (\App\Enums\DocumentAction::cases() as $action) {
+            \App\Models\DocumentLog::record($document, $action, $owner);
+        }
+
+        $stored = \Illuminate\Support\Facades\DB::table('document_logs')
+            ->distinct()->pluck('action');
+
+        foreach ($stored as $value) {
+            $this->assertNotNull(
+                \App\Enums\DocumentAction::tryFrom($value),
+                "The trail holds [{$value}], which no DocumentAction case backs. Removing a case does not remove the rows.",
+            );
+        }
+
+        // And the page that renders them survives every one.
+        $this->actingAs($owner)->get("/documents/view/{$document->code}")->assertOk();
+        $this->actingAs($owner)->get("/documents/{$document->id}/logs")->assertOk();
+    }
+
+    /**
+     * And a restricted *level* keeps the sentence it always had, which
+     * `AccessRequestTest` is the contract for.
+     */
+    public function test_a_restricted_level_still_says_restricted(): void
+    {
+        $owner = User::factory()->create();
+        $stranger = User::factory()->create();
+        $file = app(FileStorage::class)->store(
+            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
+            app(FolderService::class)->rootFor($owner),
+            $owner,
+        );
+        $document = Document::factory()->create([
+            'user_id' => $owner->id,
+            'file_id' => $file->id,
+            'file_name' => $file->original_name,
+            'visibility' => DocumentVisibility::Private,
+        ]);
+
+        $this->assertSame('restricted', $document->refusalReason($stranger));
+
+        $this->actingAs($stranger)->get("/documents/view/{$document->code}")
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('documents/restricted', false)
+                ->where('message', fn (string $message) => str_contains($message, 'restricted to the people tagged on it')));
+    }
+
+    /**
+     * The term and the list it needs are set together.
+     *
+     * Choosing `restricted` says "only the people tagged on this document",
+     * and the list is optional at every level by design — a private document
+     * can be filed before anybody knows who it is for — so the term, taken
+     * alone, can close a document to its uploader and to nobody else.
+     * Sending somebody off to the edit form and back is how that happens, so
+     * the dialog carries the picker.
+     *
+     * Underneath it is the edit form's own path, and the properties that
+     * path has are asserted with it: a **diff**, so a later edit that does
+     * not touch the list re-notifies nobody, and an absent key leaves the
+     * list alone.
+     */
+    public function test_the_share_dialog_tags_the_people_the_restricted_term_means(): void
+    {
+        \Illuminate\Support\Facades\Notification::fake();
+
+        $owner = User::factory()->create();
+        $colleague = User::factory()->create();
+        $stranger = User::factory()->create();
+        $file = app(FileStorage::class)->store(
+            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
+            app(FolderService::class)->rootFor($owner),
+            $owner,
+        );
+        $document = Document::factory()->create([
+            'user_id' => $owner->id,
+            'file_id' => $file->id,
+            'file_name' => $file->original_name,
+            'visibility' => DocumentVisibility::Private,
+        ]);
+        $link = app(SharingService::class)->createLink($document, ShareAbility::Restricted, $owner);
+
+        $this->actingAs($owner)->put("/documents/{$document->id}/share-links/{$link->id}", [
+            'ability' => 'restricted',
+            'recipients' => [$colleague->id],
+        ])->assertSessionHas('success');
+
+        $this->actingAs($colleague)->get("/documents/view/{$document->code}")
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('documents/show', false));
+        $this->actingAs($stranger)->get("/documents/view/{$document->code}")
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('documents/restricted', false));
+
+        \Illuminate\Support\Facades\Notification::assertSentTo($colleague, \App\Notifications\PrivateDocumentShared::class);
+
+        // A diff, not a sync: changing a limit must not re-notify the people
+        // already on the list.
+        \Illuminate\Support\Facades\Notification::fake();
+        $this->actingAs($owner)->put("/documents/{$document->id}/share-links/{$link->id}", [
+            'ability' => 'restricted',
+            'recipients' => [$colleague->id],
+            'max_views' => 5,
+        ])->assertSessionHas('success');
+        \Illuminate\Support\Facades\Notification::assertNothingSent();
+
+        // And leaving the field out leaves the list alone, which is what
+        // every other caller of this endpoint sends.
+        $this->actingAs($owner)->put("/documents/{$document->id}/share-links/{$link->id}", ['ability' => 'restricted']);
+        $this->assertTrue($document->fresh()->recipients()->whereKey($colleague->id)->exists());
+    }
+
+    /**
+     * A term the level cannot carry has no effect.
+     *
+     * `assertLinkable()` refuses `restricted` on a public document, so one
+     * that holds such a link is a row from the window when the term was
+     * offered everywhere. Honouring it would enforce a rule that no longer
+     * exists: the URL would open for nobody but the uploader while the
+     * document itself opens for anyone holding its tracking code — and the
+     * URL is the thing people actually have, so it reads as the link being
+     * broken rather than as a policy.
+     *
+     * So a non-bearer term on a document with no named list resolves the
+     * document's own rule, which is what the term always meant — the
+     * holder's own access. Nothing is widened: it grants exactly what
+     * `/track` grants the same person with the same code, which for a public
+     * document is a read without an account.
+     */
+    public function test_a_restricted_term_on_a_public_document_resolves_as_the_document_does(): void
+    {
+        $owner = User::factory()->create();
+        $file = app(FileStorage::class)->store(
+            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
+            app(FolderService::class)->rootFor($owner),
+            $owner,
+        );
+        $document = Document::factory()->create([
+            'user_id' => $owner->id,
+            'file_id' => $file->id,
+            'file_name' => $file->original_name,
+            'visibility' => DocumentVisibility::Public,
+        ]);
+
+        // Written directly, because the service refuses to mint it now.
+        $link = app(SharingService::class)->createLink($document, ShareAbility::View, $owner);
+        \App\Models\ShareLink::whereKey($link->id)->update(['ability' => 'restricted']);
+        $link = $link->fresh();
+
+        $this->assertTrue(
+            app(AccessResolver::class)->allows(null, $document, FileAbility::View, $link),
+            'A public document opens for anybody; a term it cannot carry must not close it.',
+        );
+
+        Auth::logout();
+        $this->sayWhoYouAre($link);
+
+        $this->get("/s/{$link->token}")
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('share/show', false));
+        $this->get("/s/{$link->token}/file")->assertOk();
+    }
+
+    /**
+     * And where the level *does* carry it, the term still closes the link.
+     *
+     * The fallback above is scoped to the one case that cannot happen any
+     * more, so it must not become a way around the term where the term is
+     * real.
+     */
+    public function test_the_term_still_closes_a_private_documents_link(): void
+    {
+        $owner = User::factory()->create();
+        $file = app(FileStorage::class)->store(
+            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
+            app(FolderService::class)->rootFor($owner),
+            $owner,
+        );
+        $document = Document::factory()->create([
+            'user_id' => $owner->id,
+            'file_id' => $file->id,
+            'file_name' => $file->original_name,
+            'visibility' => DocumentVisibility::Private,
+        ]);
+        $link = app(SharingService::class)->createLink($document, ShareAbility::Restricted, $owner);
+
+        $this->assertFalse(
+            app(AccessResolver::class)->allows(null, $document, FileAbility::View, $link),
+        );
+
+        Auth::logout();
+        $this->sayWhoYouAre($link);
+        $this->get("/s/{$link->token}/file")->assertNotFound();
+    }
+
+    /**
+     * The term belongs to a private or confidential document, and nowhere else.
+     *
+     * It says "the uploader and the people tagged on this document", which
+     * is a narrowing of a private document and a contradiction of a public
+     * one: to mean anything on a public document it would have to close the
+     * register and the printed tracking code too, and a public document is
+     * public. A document that should be for named people is filed as
+     * private — that is what the level is for — and the link's terms
+     * describe the URL within it.
+     *
+     * Asserted at the **service**, not at the dialog. An option a page
+     * merely hides is a rule only the page keeps, and this endpoint takes a
+     * posted value.
+     */
+    public function test_a_public_documents_link_cannot_carry_the_restricted_term(): void
+    {
+        $owner = User::factory()->create();
+        $file = app(FileStorage::class)->store(
+            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
+            app(FolderService::class)->rootFor($owner),
+            $owner,
+        );
+        $document = Document::factory()->create([
+            'user_id' => $owner->id,
+            'file_id' => $file->id,
+            'file_name' => $file->original_name,
+            'visibility' => DocumentVisibility::Public,
+        ]);
+
+        // Minting one outright.
+        try {
+            app(SharingService::class)->createLink($document, ShareAbility::Restricted, $owner);
+            $this->fail('A public document must not be given a restricted link.');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('private or confidential', $e->getMessage());
+        }
+
+        // And narrowing an existing one to it.
+        $link = app(SharingService::class)->createLink($document, ShareAbility::View, $owner);
+
+        try {
+            app(SharingService::class)->updateLink($link, ShareAbility::Restricted, $owner);
+            $this->fail('A public document\'s link must not be narrowed to restricted.');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('private or confidential', $e->getMessage());
+        }
+
+        // The document is untouched by the refusal, and still public.
+        $this->assertSame(ShareAbility::View, $link->fresh()->ability);
+        $this->assertSame(DocumentVisibility::Public, $document->fresh()->visibility);
+    }
+
+    /**
+     * A signed-in link holder is sent **into the documents module**.
+     *
+     * They used to be left on the share card, which is the one page in the
+     * system that shows a tracked document without saying it is one: no
+     * code, no classification, no uploader. Coming in with an account should
+     * never be a worse page than coming in without one — so the redirect
+     * carries the token, and `documents.view` resolves the grant through it.
+     *
+     * What the token buys there is exactly what it buys on `/s/{token}`:
+     * **the bytes on the link's term, and nothing else**. The trail, the
+     * thread and the version history are the document's own record — a trail
+     * listing who else received a case file is a disclosure of its own — so
+     * all three are empty in the payload, and the version endpoint still
+     * refuses outright. This asserts the boundary from both sides, because
+     * a page that merely *hides* a prop it was sent has disclosed it.
+     */
+    public function test_a_signed_in_link_holder_lands_on_the_document_page(): void
+    {
+        $owner = User::factory()->create();
+        $stranger = User::factory()->create();
+        $file = app(FileStorage::class)->store(
+            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
+            app(FolderService::class)->rootFor($owner),
+            $owner,
+        );
+        $document = Document::factory()->create([
+            'user_id' => $owner->id,
+            'file_id' => $file->id,
+            'file_name' => $file->original_name,
+            'visibility' => DocumentVisibility::Private,
+        ]);
+        // Something for the trail and the thread to hold, so "empty" is a
+        // boundary rather than an accident of an empty document.
+        \App\Models\DocumentLog::record($document, \App\Enums\DocumentAction::Uploaded, $owner);
+        \App\Models\DocumentComment::create([
+            'document_id' => $document->id,
+            'user_id' => $owner->id,
+            'actor_name' => $owner->name,
+            'body' => 'Needs the annex before it goes out.',
+            'version' => 1,
+        ]);
+
+        $link = app(SharingService::class)->createLink($document, ShareAbility::Download, $owner);
+
+        $this->actingAs($stranger)->get("/s/{$link->token}")
+            ->assertRedirect(route('documents.view', ['code' => $document->code, 'token' => $link->token]));
+
+        $this->actingAs($stranger)
+            ->get(route('documents.view', ['code' => $document->code, 'token' => $link->token]))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('documents/show', false)
+                ->where('viaLink', true)
+                ->where('linkToken', $link->token)
+                // The link carries a copy, so the button is offered.
+                ->where('can.download', true)
+                // And never the uploader's half.
+                ->where('can.manage', false)
+                ->where('links', [])
+                ->where('removedViewers', [])
+                // The document's own record, which the link never carried.
+                ->where('logs.total', 0)
+                ->where('comments', [])
+                ->where('commentsEnabled', false))
+            ->assertDontSee('Needs the annex');
+
+        // The version history stays refused outright, not merely hidden: a
+        // link reaches the current version only.
+        $this->actingAs($stranger)
+            ->getJson("/documents/{$document->id}/versions?token={$link->token}")
+            ->assertNotFound();
+    }
+
+    /**
+     * And the term still decides what the bytes do.
+     *
+     * A **view** link carries no copy. Landing on the document page must not
+     * quietly promote that to the reader's ordinary set, which includes
+     * download — the page is a better place to read from, not a wider grant.
+     */
+    public function test_a_view_only_link_holder_cannot_download_from_the_document_page(): void
+    {
+        $owner = User::factory()->create();
+        $stranger = User::factory()->create();
+        $file = app(FileStorage::class)->store(
+            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
+            app(FolderService::class)->rootFor($owner),
+            $owner,
+        );
+        $document = Document::factory()->create([
+            'user_id' => $owner->id,
+            'file_id' => $file->id,
+            'file_name' => $file->original_name,
+            'visibility' => DocumentVisibility::Private,
+        ]);
+        $link = app(SharingService::class)->createLink($document, ShareAbility::View, $owner);
+
+        $this->actingAs($stranger)
+            ->get(route('documents.view', ['code' => $document->code, 'token' => $link->token]))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('documents/show', false)
+                ->where('viaLink', true)
+                ->where('can.download', false));
+
+        // The route itself, not only the button.
+        $this->actingAs($stranger)
+            ->get("/documents/{$document->id}/file/download?token={$link->token}")
+            ->assertNotFound();
+        $this->actingAs($stranger)
+            ->get("/documents/{$document->id}/file/view?token={$link->token}")
+            ->assertOk();
+    }
+
+    /**
+     * A token that is not a grant changes nothing.
+     *
+     * Unknown, revoked, expired, spent, for another document, or restricted
+     * and held by somebody it is not for: `viewerLink()` returns null for
+     * every one of them, so the page falls back to the document's own rule
+     * and refuses. The token is not a second door that merely needs to be
+     * *present*.
+     */
+    public function test_a_dead_token_on_the_document_url_grants_nothing(): void
+    {
+        $owner = User::factory()->create();
+        $stranger = User::factory()->create();
+        $file = app(FileStorage::class)->store(
+            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
+            app(FolderService::class)->rootFor($owner),
+            $owner,
+        );
+        $document = Document::factory()->create([
+            'user_id' => $owner->id,
+            'file_id' => $file->id,
+            'file_name' => $file->original_name,
+            'visibility' => DocumentVisibility::Private,
+        ]);
+        $link = app(SharingService::class)->createLink($document, ShareAbility::Download, $owner);
+        app(SharingService::class)->revokeLink($link, $owner);
+
+        foreach ([$link->token, 'not-a-real-token'] as $token) {
+            $this->actingAs($stranger)
+                ->get(route('documents.view', ['code' => $document->code, 'token' => $token]))
+                ->assertOk()
+                ->assertInertia(fn ($page) => $page->component('documents/restricted', false));
+        }
+    }
+
+    /**
      * A bearer link still opens for a stranger with an account.
      *
-     * The other end of the same ordering: the redirect moved *after* the
-     * term's gate, and it must not have become the gate. A view link is
-     * redeemed by whoever holds the URL, signed in or not, and somebody with
-     * an account but no claim on the document belongs on the share card —
-     * there is no document page they are entitled to.
+     * The other end of the ordering: the redirect runs *after* the term's
+     * gate, and it must not have become the gate. A view or download link is
+     * redeemed by whoever holds the URL, signed in or not.
+     *
+     * Where they land has since changed, and deliberately. They used to stop
+     * on the share card, on the reasoning that somebody with no claim on the
+     * document had no document page to be entitled to. That was right about
+     * the grant and wrong about the page: the card is the one screen that
+     * shows a tracked document without saying it is one — no code, no
+     * classification, no uploader — so holding an account made the document
+     * *less* legible, not more. They are sent into the module now, with the
+     * token, and the link's term still decides what they may do there.
      */
     public function test_a_bearer_link_on_a_private_document_still_opens_for_a_signed_in_stranger(): void
     {
@@ -530,41 +822,19 @@ class ShareLinkRouteTest extends TestCase
         $link = app(SharingService::class)->createLink($document, ShareAbility::Download, $owner);
 
         $this->actingAs($stranger)->get("/s/{$link->token}")
+            ->assertRedirect(route('documents.view', ['code' => $document->code, 'token' => $link->token]));
+
+        // The link's own routes keep working either way: the redirect is
+        // where a *browser* is sent, not a narrowing of what the token does.
+        $this->actingAs($stranger)->get("/s/{$link->token}/file")->assertOk();
+
+        // And a holder with no account is untouched by all of it — the card
+        // is still the right page for somebody with nowhere else to be.
+        Auth::logout();
+        $this->sayWhoYouAre($link);
+        $this->get("/s/{$link->token}")
             ->assertOk()
             ->assertInertia(fn ($page) => $page->component('share/show', false));
-        $this->actingAs($stranger)->get("/s/{$link->token}/file")->assertOk();
-    }
-
-    /**
-     * The document stays public; only the link is closed.
-     *
-     * A restricted link is a statement about one URL, never about the
-     * document — anybody may still open a public document by its tracking
-     * code, which is the door the classification actually describes.
-     */
-    public function test_a_restricted_link_does_not_close_the_public_document_itself(): void
-    {
-        $owner = User::factory()->create();
-        $file = app(FileStorage::class)->store(
-            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
-            app(FolderService::class)->rootFor($owner),
-            $owner,
-        );
-        $document = Document::factory()->create([
-            'user_id' => $owner->id,
-            'file_id' => $file->id,
-            'file_name' => $file->original_name,
-            'visibility' => DocumentVisibility::Public,
-        ]);
-
-        app(SharingService::class)->createLink($document, ShareAbility::Restricted, $owner);
-
-        Auth::logout();
-
-        $this->get("/track?code={$document->code}")
-            ->assertOk()
-            ->assertInertia(fn ($page) => $page->component('track/index', false)
-                ->where('result.open', true));
     }
 
     /**

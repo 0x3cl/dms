@@ -18,6 +18,7 @@ import TrailVersionTabs from '../../components/TrailVersionTabs';
 import { formatTimestamp } from '../../utils/format-date';
 import { registerHref } from '../../registerReturn';
 import PersonName from '../../components/PersonName';
+import RecipientPicker from '../../components/RecipientPicker';
 
 /**
  * A document and its travel history — what a scanned QR Tracker label opens.
@@ -45,7 +46,7 @@ import PersonName from '../../components/PersonName';
  */
 export default defineComponent({
     name: 'DocumentShow',
-    components: { AdminShell, Badge, Card, CommentPanel, ConfirmActionModal, FilePreviewModal, FilePreviewPane, Head, Link, Pagination, PersonName, TrailFilters, TrailVersionTabs, UserAvatar, VersionList, VisibilityBadge },
+    components: { AdminShell, Badge, Card, CommentPanel, ConfirmActionModal, FilePreviewModal, FilePreviewPane, Head, Link, Pagination, PersonName, RecipientPicker, TrailFilters, TrailVersionTabs, UserAvatar, VersionList, VisibilityBadge },
     props: {
         document: { type: Object, required: true },
         /** A paginator now, not a bare array: the trail is 12 rows a page. */
@@ -61,6 +62,27 @@ export default defineComponent({
         /** The whole thread; the panel narrows it to the version on screen. */
         comments: { type: Array, default: () => [] },
         commentsEnabled: { type: Boolean, default: true },
+        /**
+         * Whether this reader is here on a **share link** rather than on the
+         * document's own rule.
+         *
+         * A signed-in person holding a view or download link to a document
+         * they are not tagged on is sent here rather than to the share card,
+         * because the card shows a tracked document without saying it is one.
+         * What the link buys is the bytes on its own term and nothing else,
+         * so the trail, the thread and the version history are hidden — the
+         * server also ships them empty, which is where that is enforced.
+         */
+        viaLink: { type: Boolean, default: false },
+        /**
+         * The token, sent back with the requests that fetch bytes.
+         *
+         * `AccessResolver` cannot see a token that is not in the request, so
+         * the descriptor fetch and Download both carry it. It is a credential
+         * this reader already holds — they arrived with it in the URL — so
+         * nothing is handed out by putting it here.
+         */
+        linkToken: { type: String, default: null },
         actions: { type: Array, default: () => [] },
         /**
          * The document's access level as the server describes it —
@@ -71,6 +93,11 @@ export default defineComponent({
         visibility: { type: Object, default: null },
         /** Live share links. Sent to the uploader only — a link URL *is* the credential. */
         links: { type: Array, default: () => [] },
+        /**
+         * The directory, for the share dialog's recipient picker. To the
+         * uploader alone, like `links`.
+         */
+        taggable: { type: Array, default: () => [] },
         /**
          * Viewers the uploader has taken off — `{id, name, removed_at}`, and to
          * the uploader alone. A chip that simply disappeared would leave them
@@ -233,7 +260,12 @@ export default defineComponent({
          */
         const loadPreview = async (version = null) => {
             try {
-                const query = version ? `?version=${version}` : '';
+                const params = new URLSearchParams();
+                if (version) params.set('version', version);
+                // See the `linkToken` prop: the resolver cannot read a token
+                // that is not in the request.
+                if (props.linkToken) params.set('token', props.linkToken);
+                const query = params.toString() ? `?${params}` : '';
                 const response = await fetch(`/documents/${props.document.id}/preview${query}`, {
                     headers: { Accept: 'application/json' },
                     credentials: 'same-origin',
@@ -453,8 +485,14 @@ export default defineComponent({
             const base = `/documents/${props.document.id}/file/download`;
             const version = previewFile.value?.version;
             const current = previewFile.value?.current_version;
+            const params = new URLSearchParams();
 
-            return version && current && version !== current ? `${base}?version=${version}` : base;
+            if (version && current && version !== current) params.set('version', version);
+            // A link holder's grant is the token; without it this route
+            // answers to the document's own rule and refuses them.
+            if (props.linkToken) params.set('token', props.linkToken);
+
+            return params.toString() ? `${base}?${params}` : base;
         });
 
         /*
@@ -839,19 +877,51 @@ export default defineComponent({
          */
         const defaultAbility = computed(() => (props.visibility?.restricted ? 'restricted' : 'view'));
 
+        /*
+         * The people tagged on this document, as ids, for the picker below.
+         *
+         * Read off the document rather than kept as a second list: the chips
+         * on the page and the picker in the dialog are one fact, and a copy
+         * of it is how the dialog comes to disagree with the page behind it.
+         */
+        const taggedIds = () => (props.document.recipients ?? []).map((person) => person.id);
+
+        /*
+         * The term to seed the dialog with.
+         *
+         * The stored one, unless this level does not offer it. `restricted`
+         * belongs to a private or confidential document, so a public one
+         * holding such a link — minted while the term was briefly offered
+         * everywhere — has a stored value with no matching option, and the
+         * select came up **blank**: no term shown, and Save would post an
+         * ability the server then refuses. Falling back to the level's own
+         * default makes the dialog state something true and saveable.
+         */
+        const seededAbility = () => {
+            const stored = link.value?.ability ?? defaultAbility.value;
+
+            return stored === 'restricted' && ! props.visibility?.restricted
+                ? defaultAbility.value
+                : stored;
+        };
+
         const linkForm = useForm({
-            ability: link.value?.ability ?? defaultAbility.value,
+            ability: seededAbility(),
             expires_at: localDateTime(link.value?.expires_at),
             max_views: link.value?.max_views ?? null,
+            recipients: taggedIds(),
         });
 
         // Reopening the panel shows the link's *current* terms, not whatever
         // was last typed into the form.
         const openSharing = () => {
             linkForm.clearErrors();
-            linkForm.ability = link.value?.ability ?? defaultAbility.value;
+            linkForm.ability = seededAbility();
             linkForm.expires_at = localDateTime(link.value?.expires_at);
             linkForm.max_views = link.value?.max_views ?? null;
+            // Re-seeded on open, like the terms above: the dialog states what
+            // is true now, never what was last typed into it.
+            linkForm.recipients = taggedIds();
             sharing.value = true;
         };
 
@@ -1173,18 +1243,35 @@ export default defineComponent({
                     </div>
                 </div>
 
+                <!--
+                    Say why the page is shorter than it would otherwise be.
+
+                    A reader here on a share link gets the document and the
+                    bytes on the link's own term, and not the trail, the
+                    thread or the version history — those are the document's
+                    own record and the link never carried them. Without a
+                    sentence saying so the page reads as missing its panels;
+                    with one it reads as what it is, and it names the thing
+                    to do about it.
+                -->
+                <p v-if="viaLink" class="mt-6 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-[#07559e]">
+                    <i class="fa-solid fa-link mr-1.5" aria-hidden="true"></i>
+                    <span class="font-bold">You are reading this through a shared link.</span>
+                    It opens the file on the terms whoever shared it chose. The audit trail, the comments and the file's earlier versions belong to the document itself — ask to be tagged on it if you need those.
+                </p>
+
                 <!-- File actions are plain links: these routes return the file itself. -->
                 <div class="mt-7 flex flex-wrap gap-3 border-t border-slate-200 pt-5">
                     <!-- The file is rendered below rather than behind a
                          button; what needs one is the trail, which is long and
                          read far less often. -->
-                    <button type="button" class="inline-flex items-center justify-center gap-2 rounded-lg bg-[#00aeef] px-4 py-2.5 text-sm font-bold text-white transition hover:bg-[#009bd8]" @click="versionsOpen = false; commentsOpen = false; showingTrail = true">
+                    <button v-if="!viaLink" type="button" class="inline-flex items-center justify-center gap-2 rounded-lg bg-[#00aeef] px-4 py-2.5 text-sm font-bold text-white transition hover:bg-[#009bd8]" @click="versionsOpen = false; commentsOpen = false; showingTrail = true">
                         <i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i>Audit Trail
                         <span class="ml-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-white/20 px-1.5 text-xs font-bold">{{ logs.total }}</span>
                     </button>
                     <a v-if="can.download" :href="downloadUrl" class="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-50"><i class="fa-solid fa-download" aria-hidden="true"></i>Download</a>
-                    <button v-if="isAuthenticated" type="button" class="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-50" @click="logging = true"><i class="fa-solid fa-pen-to-square" aria-hidden="true"></i>Log action</button>
-                    <button type="button" class="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-50" @click="showingQr = true"><i class="fa-solid fa-qrcode" aria-hidden="true"></i>QR Tracker</button>
+                    <button v-if="isAuthenticated && !viaLink" type="button" class="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-50" @click="logging = true"><i class="fa-solid fa-pen-to-square" aria-hidden="true"></i>Log action</button>
+                    <button v-if="!viaLink" type="button" class="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-50" @click="showingQr = true"><i class="fa-solid fa-qrcode" aria-hidden="true"></i>QR Tracker</button>
                     <button v-if="can.link" type="button" class="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-50" @click="openSharing"><i class="fa-solid fa-link" aria-hidden="true"></i>{{ link ? 'Manage link' : 'Share by link' }}</button>
                     <template v-if="can.manage">
                         <Link :href="'/documents/' + document.id + '/edit'" class="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-50"><i class="fa-solid fa-pen" aria-hidden="true"></i>Edit</Link>
@@ -1288,7 +1375,19 @@ export default defineComponent({
                         </div>
                     </div>
                     <div class="flex shrink-0 flex-wrap items-center gap-3">
+                        <!--
+                            Hidden for a reader who is here on a share link.
+
+                            A link reaches the current version and grants the
+                            bytes; the version history, the thread and the
+                            travel trail are the document's own record, and
+                            the server ships all three empty for this reader.
+                            Leaving the controls up would offer panels that
+                            open on nothing, which reads as a broken page
+                            rather than as a boundary.
+                        -->
                         <button
+                            v-if="!viaLink"
                             type="button"
                             class="inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-bold transition"
                             :class="versionsOpen ? 'border-[#07559e] bg-sky-50 text-[#07559e]' : 'border-slate-300 text-slate-700 hover:bg-slate-50'"
@@ -1301,6 +1400,7 @@ export default defineComponent({
                              kind of question about the file on screen: what
                              it has been, and what people have said about it. -->
                         <button
+                            v-if="!viaLink"
                             type="button"
                             class="inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-bold transition"
                             :class="commentsOpen ? 'border-[#07559e] bg-sky-50 text-[#07559e]' : 'border-slate-300 text-slate-700 hover:bg-slate-50'"
@@ -1776,6 +1876,7 @@ export default defineComponent({
                 : 'Anyone holding this link can open the document without signing in. Its terms can be changed, its address replaced and the link revoked at any time.'"
             :confirm-label="link ? 'Save changes' : 'Create link'"
             icon="fa-solid fa-link"
+            wide
             @close="sharing = false"
             @confirm="submitLink">
             <div v-if="link" class="mt-5 text-left">
@@ -1819,22 +1920,24 @@ export default defineComponent({
                     <span class="text-sm font-semibold text-slate-700">What the link allows</span>
                     <select v-model="linkForm.ability" class="field">
                         <!--
-                            Offered at every level, including public, and it
-                            means the same thing at each: the uploader and
-                            the people tagged on this document, nobody else.
+                            Only where the document is a list of names.
 
-                            It was hidden on a public document, on the
-                            reasoning that "people who already have access"
-                            is everybody there — and the resolver agreed,
-                            answering the term by asking what the holder
-                            could do with no link at all. So the one control
-                            that says "only the people on this document" did
-                            nothing on exactly the documents somebody is most
-                            likely to be careless with. Both halves are
-                            fixed: the option is offered, and the term
-                            resolves the named list wherever it is set.
+                            The term says "the uploader and the people tagged
+                            on this document", which is a narrowing of a
+                            private document and a contradiction of a public
+                            one: on a public document it would have to close
+                            the register and the printed code as well to mean
+                            anything, and the office's answer is that a
+                            public document is public. A document that should
+                            be for named people is filed as private — that is
+                            what the level is for — and the link's terms
+                            describe the URL within it.
+
+                            The server refuses it too, in
+                            SharingService::assertLinkable(): an option a
+                            page merely hides is a rule only the page keeps.
                         -->
-                        <option value="restricted">Restricted</option>
+                        <option v-if="visibility && visibility.restricted" value="restricted">Restricted</option>
                         <option value="view">View only</option>
                         <option value="download">View and download</option>
                     </select>
@@ -1852,15 +1955,43 @@ export default defineComponent({
                          sentence says which one is in force rather than
                          describing a tagged list to somebody whose document
                          is open to the whole office. -->
-                    <p v-if="linkForm.ability === 'restricted'" class="mt-1 text-xs text-slate-500">
+                    <p v-if="linkForm.ability === 'restricted' && visibility && visibility.restricted" class="mt-1 text-xs text-slate-500">
                         The link opens only for you and the people tagged on this document. Anyone else is told it exists and is restricted — so a copy of the URL, or a photograph of the printed label, gives nothing away.
-                        <!-- On a public document this closes the link and
-                             nothing else: the tracking code still opens the
-                             document for anybody, which is what the level
-                             means. Saying so stops it reading as a way to
-                             take a public document back. -->
-                        <span v-if="visibility && !visibility.restricted">This closes the link only — the document is {{ visibility.label.toLowerCase() }}, so anybody can still open it with its tracking code.</span>
                     </p>
+                    <!--
+                        Who "the people tagged on it" are, where the term is
+                        chosen.
+
+                        Not a third place to grant access but the same form
+                        reopened, for the one moment that creates the need:
+                        a document with nobody tagged, set to restricted, is
+                        closed to its uploader and to literally nobody else.
+                        Sending somebody off to the edit form and back is how
+                        a document ends up sealed with an empty list. The
+                        whole list is on screen while it is changed, which is
+                        the property the old share panel's picker lacked and
+                        the reason that one was removed.
+                    -->
+                    <!--
+                        Gated on the **level** as well as the term.
+
+                        A public document holding a restricted link — minted
+                        while the term was briefly offered everywhere — still
+                        had that term in the form, so the picker rendered on a
+                        document that has no named list and never will.
+                        The term is the reason the picker exists; the level is
+                        what decides whether the term may be in force at all,
+                        so both have to agree before it is shown.
+                    -->
+                    <div v-if="linkForm.ability === 'restricted' && visibility && visibility.restricted" class="mt-4">
+                        <p class="text-xs font-bold uppercase tracking-wide text-slate-500">Who can open it</p>
+                        <p class="mt-1 text-xs text-slate-500">You can always open it. Anybody here can open the document and this link; everybody else is told it exists and can ask.</p>
+                        <RecipientPicker
+                            v-model="linkForm.recipients"
+                            :people="taggable"
+                            :invalid="Boolean(linkForm.errors.recipients)"
+                            empty-text="Nobody is tagged yet, so only you can open this. Use Add to choose who else can." />
+                    </div>
                     <p v-else class="mt-1 text-xs text-slate-500">
                         <span v-if="visibility && visibility.restricted" class="font-semibold text-amber-700">Anyone holding this URL can open the document without an account, even though it is {{ visibility.label.toLowerCase() }}.</span>
                         <span v-else>Anyone holding this URL can open the document without an account.</span>

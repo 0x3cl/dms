@@ -132,6 +132,35 @@ class AccessResolver
          * two.
          */
         if (! $link->ability->isBearer()) {
+            /*
+             * The term only means something where the document *is* a named
+             * list, which is the only place it can now be set.
+             *
+             * `SharingService::assertLinkable()` refuses `restricted` on a
+             * public document, so a public document carrying one is a row
+             * from the window when the term was offered everywhere — and
+             * honouring it would enforce a rule that no longer exists: the
+             * link would open for nobody but the uploader while the document
+             * itself opens for anyone holding its tracking code. The URL is
+             * the thing people actually have, so that reads as the link
+             * being broken.
+             *
+             * Resolved as the document's own rule instead, which is what the
+             * term always meant — the holder's own access — and which on a
+             * public document is a read for anybody, account or not. Nothing
+             * is widened: it grants exactly what `/track` already grants the
+             * same person with the same code.
+             */
+            $document = match (true) {
+                $subject instanceof Document => $subject,
+                $subject instanceof File => $subject->document,
+                default => null,
+            };
+
+            if ($document !== null && ! $document->restrictsToNamedPeople()) {
+                return $this->withoutLink($user, $subject);
+            }
+
             return $this->forNamedAudience($user, $subject);
         }
 
@@ -291,7 +320,16 @@ class AccessResolver
             return AccessGrant::of(FileAbility::all(), AccessSource::Uploader);
         }
 
-        if (! $document->visibility->restrictedToNamedPeople()) {
+        /*
+         * Asked as a question — "does anything restrict this to a named
+         * list" — rather than as `=== Public`, so a level added later cannot
+         * join the public side by being forgotten.
+         *
+         * `Document::restrictsToNamedPeople()` is the one place that
+         * question is answered, for this clause and for the three screens
+         * that have to agree with it.
+         */
+        if (! $document->restrictsToNamedPeople()) {
             return AccessGrant::of(self::READER_ABILITIES, AccessSource::PublicItem);
         }
 
