@@ -300,6 +300,28 @@ class Document extends Model
     }
 
     /**
+     * What somebody has withdrawn: their own documents, soft-deleted.
+     *
+     * One statement, because two screens ask it — the Trash, which is where
+     * everything soft-deleted belongs, and the register's own Deleted tab,
+     * which is where somebody working through the register will look first.
+     * Two hand-built `onlyTrashed()` queries is how one of them quietly
+     * starts showing a document the other does not.
+     *
+     * Deliberately the uploader's own, administrator included: restoring
+     * mirrors deleting and `DocumentController::destroy()` is uploader-only,
+     * and what somebody decided to take off the register is not a thing the
+     * register should go on showing to everybody.
+     *
+     * @param  Builder<$this>  $query
+     * @return Builder<$this>
+     */
+    public function scopeWithdrawnBy(Builder $query, int $userId): Builder
+    {
+        return $query->onlyTrashed()->uploadedBy($userId);
+    }
+
+    /**
      * Title-or-code search, which is what every document list offers.
      *
      * @param  Builder<$this>  $query

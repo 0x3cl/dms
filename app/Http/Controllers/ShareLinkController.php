@@ -395,9 +395,12 @@ class ShareLinkController extends Controller
      * whatever the document's classification is: an uploader who widens a
      * private document's link is deciding that this particular URL is the
      * door, and the restricted list goes on governing every other way in.
-     * A `restricted` link is not a key at all: the holder is resolved as
-     * themselves — the signed-in account, or nobody — and the link opens only
-     * if the resolver would have let them open the document without it.
+     * A `restricted` link is not a key at all: it opens only for the
+     * document's **named audience** — the uploader and the people tagged on
+     * it — whatever the document's level says. On a public document that
+     * closes the link to the public, which is exactly what choosing the term
+     * asks for; resolving the level instead made the term mean nothing
+     * there.
      *
      * That choice is where the old rule went. It used to be read off the
      * document's level, so a restricted document's link was never a key and
@@ -423,7 +426,12 @@ class ShareLinkController extends Controller
             return true;
         }
 
-        return $this->access->allows($request->user(), $item, FileAbility::View);
+        // Asked **through the link**, so this is the resolver's own answer
+        // rather than a second statement of it. It used to ask what the
+        // holder could do with no link at all, which on a public document is
+        // "everything a reader may do" — so a link marked Restricted opened
+        // for whoever held it. See AccessResolver::forNamedAudience().
+        return $this->access->allows($request->user(), $item, FileAbility::View, $link);
     }
 
     /**

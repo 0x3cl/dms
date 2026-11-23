@@ -47,6 +47,16 @@ export default defineComponent({
     props: {
         files: { type: Object, required: true },
         folders: { type: Array, required: true },
+        /**
+         * Tracked documents the viewer has withdrawn.
+         *
+         * They are here because the Trash is the screen named after the
+         * question "I deleted something, where is it" — a soft-deleted thing
+         * that appears nowhere on it is a thing people hunt for. Not files:
+         * withdrawing a document does not delete its bytes, which is exactly
+         * what the row says.
+         */
+        documents: { type: Array, default: () => [] },
         folder: { type: Object, default: null },
         breadcrumbs: { type: Array, default: () => [] },
         filters: { type: Object, required: true },
@@ -75,6 +85,25 @@ export default defineComponent({
         // Navigation inside the trash keeps the view, so opening a deleted
         // folder does not throw you back to the grid.
         const folderHref = (publicId) => `/files/trash?folder=${publicId}&view=${filters.view}`;
+
+        // -------------------------------------------- withdrawn documents
+        /*
+         * Restoring a document is the documents module's own route, posted
+         * from here rather than reimplemented: this screen lists them, it
+         * does not own them.
+         */
+        const restoringDocument = ref(null);
+        const documentProcessing = ref(false);
+        const confirmRestoreDocument = () => {
+            documentProcessing.value = true;
+            router.post(`/documents/${restoringDocument.value.id}/restore`, {}, {
+                preserveScroll: true,
+                onFinish: () => {
+                    documentProcessing.value = false;
+                    restoringDocument.value = null;
+                },
+            });
+        };
 
         // ------------------------------------------------------------ restore
         const restoring = ref(null);
@@ -124,6 +153,10 @@ export default defineComponent({
         };
 
         const act = ({ item, kind, action }) => {
+            // A document is restored through the documents module's own
+            // route; everything else goes to /files/restore.
+            if (kind === 'document') { restoringDocument.value = item; return; }
+
             if (action === 'restore') { restoring.value = { item, kind }; return; }
             if (action === 'purge') { startPurge([{ kind, public_id: item.public_id, name: item.name }]); }
         };
@@ -131,6 +164,7 @@ export default defineComponent({
         return {
             act, confirmPurge, confirmRestore, filters, folderHref, load, page, purgeError,
             purgeProcessing, purging, restoreMessage, restoreProcessing, restoring, search, setView, sortBy,
+            confirmRestoreDocument, documentProcessing, restoringDocument,
         };
     },
     template: `
@@ -141,7 +175,7 @@ export default defineComponent({
                 <p class="text-xs font-bold uppercase tracking-[.18em] text-[#07559e]">Storage</p>
                 <h2 class="mt-1 text-2xl font-bold uppercase tracking-wide text-slate-900">{{ folder ? folder.name : 'Trash' }}</h2>
                 <p v-if="folder" class="mt-1 text-slate-600">Inside a deleted folder. Everything here is still deleted — restoring the folder brings all of it back together.</p>
-                <p v-else class="mt-1 text-slate-600">Deleted files and folders. Open a folder to see what went with it, restore what you need, or delete it for good.</p>
+                <p v-else class="mt-1 text-slate-600">Everything you have deleted — files, folders and withdrawn documents. Open a folder to see what went with it, restore what you need, or delete it for good.</p>
             </div>
 
             <div class="mt-5">
@@ -160,11 +194,15 @@ export default defineComponent({
                 <ViewToggle :model-value="filters.view" @update:model-value="setView" />
             </div>
 
+            <!-- Documents go through the same grid and table as the files:
+                 the trash is one question, and a second list on it reads as a
+                 second trash. -->
             <FileGrid
                 v-if="filters.view === 'grid'"
                 mode="trash"
                 :folders="folders"
                 :files="files.data"
+                :documents="documents"
                 :folder-href="folderHref"
                 :selectable="false"
                 @act="act" />
@@ -173,6 +211,7 @@ export default defineComponent({
                 mode="trash"
                 :folders="folders"
                 :files="files.data"
+                :documents="documents"
                 :folder-href="folderHref"
                 :sort="filters.sort"
                 :direction="filters.direction"
@@ -192,6 +231,22 @@ export default defineComponent({
             icon="fa-solid fa-rotate-left"
             @close="restoring = null"
             @confirm="confirmRestore" />
+
+        <!--
+            Confirmed like any restore here, and it states the consequence
+            rather than asking "are you sure": the document goes back under
+            the code already printed on paper, and opens again for everybody
+            tagged on it — all of whom are off screen.
+        -->
+        <ConfirmActionModal
+            :open="restoringDocument !== null"
+            :processing="documentProcessing"
+            title="Restore this document?"
+            :message="(restoringDocument?.title ?? 'This document') + ' goes back on the register under ' + (restoringDocument?.code ?? 'its tracking code') + ', and opens again for everybody it is shared with.'"
+            confirm-label="Restore"
+            icon="fa-solid fa-rotate-left"
+            @close="restoringDocument = null"
+            @confirm="confirmRestoreDocument" />
 
         <ConfirmDeleteModal
             :open="purging !== null"

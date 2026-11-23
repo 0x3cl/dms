@@ -90,10 +90,16 @@ export default defineComponent({
                     </div>
                     <ul class="mt-6 divide-y divide-slate-100">
                         <li v-for="document in recentUploads" :key="document.id" class="py-3">
-                            <Link :href="'/documents/view/' + document.code" class="flex flex-wrap items-center justify-between gap-3 transition hover:text-[#07559e]">
+                            <!-- The row does not wrap and the title is capped
+                                 at 300px: a free-text title long enough to fill
+                                 the card pushed the badge onto a line of its
+                                 own, which reads as a second row. The whole
+                                 string is a tooltip and the document's own
+                                 page. -->
+                            <Link :href="'/documents/view/' + document.code" class="flex items-center justify-between gap-3 transition hover:text-[#07559e]">
                                 <span class="min-w-0">
-                                    <span class="block truncate font-semibold text-slate-800">{{ document.title }}</span>
-                                    <span class="block text-xs text-slate-500">{{ document.code }} · {{ formatTimestamp(document.created_at) }}</span>
+                                    <span class="block max-w-[300px] truncate font-semibold text-slate-800" :title="document.title">{{ document.title }}</span>
+                                    <span class="block max-w-[300px] truncate text-xs text-slate-500">{{ document.code }} · {{ formatTimestamp(document.created_at) }}</span>
                                 </span>
                                 <VisibilityBadge class="shrink-0" :visibility="document.visibility" />
                             </Link>
@@ -112,10 +118,10 @@ export default defineComponent({
                     </div>
                     <ul class="mt-6 divide-y divide-slate-100">
                         <li v-for="document in recentReceived" :key="document.id" class="py-3">
-                            <Link :href="'/documents/view/' + document.code" class="flex flex-wrap items-center justify-between gap-3 transition hover:text-[#07559e]">
+                            <Link :href="'/documents/view/' + document.code" class="flex items-center justify-between gap-3 transition hover:text-[#07559e]">
                                 <span class="min-w-0">
-                                    <span class="block truncate font-semibold text-slate-800">{{ document.title }}</span>
-                                    <span class="block text-xs text-slate-500">{{ document.code }} · from {{ document.user?.name ?? document.uploader_name ?? 'Unknown' }}</span>
+                                    <span class="block max-w-[300px] truncate font-semibold text-slate-800" :title="document.title">{{ document.title }}</span>
+                                    <span class="block max-w-[300px] truncate text-xs text-slate-500">{{ document.code }} · from {{ document.user?.name ?? document.uploader_name ?? 'Unknown' }}</span>
                                 </span>
                                 <VisibilityBadge class="shrink-0" :visibility="document.visibility" />
                             </Link>
@@ -135,7 +141,7 @@ export default defineComponent({
                         <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-100 text-xs text-[#07559e]"><i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i></span>
                         <span class="min-w-0">
                             <span class="block text-sm font-semibold text-slate-800">{{ entry.action_label }}</span>
-                            <span class="block text-xs text-slate-500">{{ entry.document?.title ?? 'A document' }} · {{ formatTimestamp(entry.occurred_at ?? entry.created_at) }}</span>
+                            <span class="block max-w-[300px] truncate text-xs text-slate-500" :title="entry.document?.title ?? 'A document'">{{ entry.document?.title ?? 'A document' }} · {{ formatTimestamp(entry.occurred_at ?? entry.created_at) }}</span>
                             <span v-if="entry.remarks" class="mt-1 block whitespace-pre-line text-xs italic text-slate-500">{{ entry.remarks }}</span>
                         </span>
                     </li>

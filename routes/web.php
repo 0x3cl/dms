@@ -249,6 +249,25 @@ Route::middleware(['auth'])->group(function () {
         ->delete('documents/{document}', [DocumentController::class, 'destroy'])->name('documents.destroy');
 
     /*
+     * Putting a withdrawn document back.
+     *
+     * `withTrashed()` on the binding, because the subject of this route is by
+     * definition soft-deleted — without it the model binding applies the
+     * global scope and the one route that exists to reach a trashed document
+     * 404s on every one of them.
+     *
+     * Gated on `documents.delete`, which is the grant that put it there:
+     * restoring is the mirror of deleting, not a separate capability, and a
+     * second permission would be a role holding half of one act. The
+     * controller still asks `owns()`, so the grant says the capability exists
+     * and ownership says which document.
+     */
+    Route::middleware('permission:documents.delete')
+        ->post('documents/{document}/restore', [DocumentController::class, 'restore'])
+        ->withTrashed()
+        ->name('documents.restore');
+
+    /*
      * File responses. These must be reached by a plain link or window.location
      * — an Inertia XHR visit cannot follow a file download.
      *

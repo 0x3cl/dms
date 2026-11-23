@@ -211,7 +211,7 @@ export default defineComponent({
                                     :person="{ name: row.requester_name }"
                                     class="!h-10 !w-10 !text-xs" />
                                 <div class="min-w-0">
-                                    <p class="truncate font-bold text-slate-800">{{ row.document_title }}</p>
+                                    <p class="max-w-[300px] truncate font-bold text-slate-800" :title="row.document_title">{{ row.document_title }}</p>
                                     <p class="font-mono text-xs text-slate-500">{{ row.document_code }}</p>
                                     <p class="mt-1 text-xs text-slate-600">
                                         <template v-if="tab === 'outgoing'">You asked {{ row.owner_name || 'the uploader' }}</template>

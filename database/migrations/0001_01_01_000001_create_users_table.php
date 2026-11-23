@@ -9,12 +9,14 @@ return new class extends Migration
     /**
      * Accounts, plus the two framework tables keyed off them.
      *
-     * `employee_id` is the credential — sign-in is by employee ID, not email
-     * (see App\Http\Requests\Auth\LoginRequest). `email` is nullable and
-     * exists only so Laravel's password broker has something to look an
-     * account up by; an account without one cannot self-serve a reset and
-     * needs an administrator. `password_reset_tokens` is therefore keyed by
-     * email, which is the only key the broker can use.
+     * `employee_id` is the credential the office issues, and **sign-in
+     * accepts it or `email`** — one field, resolved to a column by the shape
+     * of what was typed (see App\Http\Requests\Auth\LoginRequest). `email`
+     * is nullable and unique: it exists so Laravel's password broker has
+     * something to look an account up by, and an account without one is
+     * unreachable by email, cannot self-serve a reset, and needs an
+     * administrator. `password_reset_tokens` is therefore keyed by email,
+     * which is the only key the broker can use.
      *
      * The division and section are foreign keys only. The old
      * `division_name` / `section_name` string columns are gone: they were a

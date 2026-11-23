@@ -109,13 +109,22 @@ class AccessResolver
         }
 
         /*
-         * A `restricted` link is an address, not a key.
+         * A `restricted` link is an address, not a key, and the address is
+         * **the named list**.
          *
-         * It resolves to the holder's own access, which is the whole meaning
-         * of the term: following it is the same as typing the tracking code,
-         * so the uploader and the tagged people reach the document with
-         * everything their own grant allows — including download, which the
-         * link itself never conferred — and anybody else reaches nothing.
+         * It resolves to the uploader and the people tagged on the document,
+         * with everything their own grant allows — including download, which
+         * the link itself never conferred — and to nobody else.
+         *
+         * It used to resolve the subject's whole rule instead, by asking the
+         * resolver what the holder could do without a link at all. On a
+         * restricted document those are the same answer, which is why it
+         * read as correct; on a **public** one they are not, and the term
+         * silently meant nothing there — a link the uploader had marked
+         * Restricted opened for whoever held the URL, because the document
+         * did. A term that means "only the named people" has to mean that
+         * wherever it is set, or it is a control that lies on exactly the
+         * documents somebody is most likely to be careless with.
          *
          * The three refusals above still ran, deliberately. A revoked,
          * expired, spent or reclassified link stops resolving whatever its
@@ -123,7 +132,7 @@ class AccessResolver
          * two.
          */
         if (! $link->ability->isBearer()) {
-            return $this->withoutLink($user, $subject);
+            return $this->forNamedAudience($user, $subject);
         }
 
         /*
@@ -223,6 +232,48 @@ class AccessResolver
      * `=== Public`, so a level added later cannot join the public side by
      * being forgotten.
      */
+    /**
+     * Who a `restricted` link opens for: the document's named audience.
+     *
+     * The uploader and the live recipient list, and nothing else — not the
+     * level, which is the whole point. A public document's restricted link
+     * is therefore closed to the public, which is what the uploader asked
+     * for by choosing the term.
+     *
+     * The clauses are the first and third of `forDocument()` deliberately
+     * and in the same order: this is that rule with the *level* clause
+     * removed, not a new rule beside it. The recipient check goes through
+     * `recipients()`, the live list, so a removed viewer loses the link with
+     * everything else.
+     *
+     * A link pointing at anything but a document resolves to nothing here,
+     * which is unreachable in practice — `ShareAbility::documentOnly()` and
+     * `SharingService` refuse to mint the term on a file — and is the right
+     * answer if one ever existed.
+     */
+    private function forNamedAudience(?User $user, File|Folder|Document $subject): AccessGrant
+    {
+        $document = match (true) {
+            $subject instanceof Document => $subject,
+            $subject instanceof File => $subject->document,
+            default => null,
+        };
+
+        if ($document === null) {
+            return AccessGrant::denied();
+        }
+
+        if ($user && $document->user_id !== null && $document->user_id === $user->id) {
+            return AccessGrant::of(FileAbility::all(), AccessSource::Uploader);
+        }
+
+        if ($user && $document->recipients()->where('user_id', $user->id)->exists()) {
+            return AccessGrant::of(self::READER_ABILITIES, AccessSource::Recipient);
+        }
+
+        return AccessGrant::denied();
+    }
+
     private function forDocument(?User $user, Document $document): AccessGrant
     {
         if ($user && $document->user_id !== null && $document->user_id === $user->id) {

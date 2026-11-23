@@ -91,7 +91,15 @@ Folders are purged last and only once empty, so a folder holding a kept file sta
 
 Replacing a document's file repointed `documents.file_id` at the replacement and left the old `files` row and its bytes in place **forever**, with nothing pruning them. Not web-reachable since storage moved to the private disk, so wasted space rather than an exposure — but unbounded.
 
-The orphan sweep is narrow on purpose: only files under a `Tracked Documents%` folder, with `source` of `upload` or `import`, that no `documents` row points at. **A private file with no shares is not an orphan, it is a private file.**
+### `files:flatten-tracked-folders`
+
+Empties the `Tracked Documents {year}` folders the register used to create, moving every file into its owner's storage root and removing the folder. `--dry-run` reports without moving.
+
+Removing a default only half-removes it: nothing creates such a folder any more, but everything filed before that is still sitting in one, which is what people actually see. Three rules: it moves through `FileManager::move()`, so the ability check, the transaction and the `moved` activity row are the ones every other move gets — a sweep that rearranges somebody's storage with no trail is indistinguishable afterwards from files going missing; a name already taken at the root is **numbered first** through `rename()`, because this runs unattended and the alternative to renaming is leaving the file where it is; and a folder that still has anything in it, **including trashed files**, is kept and reported, since `files.folder_id` is `restrictOnDelete` and a restore needs its container.
+
+Only a folder directly under a storage root is touched. One somebody named that themselves, deeper in their tree, is their filing.
+
+The orphan sweep is narrow on purpose: only files under a `Tracked Documents%` folder, with `source` of `upload` or `import`, that no `documents` row points at. **A private file with no shares is not an orphan, it is a private file.** The folder condition now also dates the sweep: nothing creates such a folder any longer — the register's form asks where to save and defaults to the uploader's root — so this collects the wreckage of the pre-versioning replacement, which all landed there. Dropping the condition would start collecting ordinary files somebody uploaded and never tracked.
 
 ## Key files
 

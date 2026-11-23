@@ -3,17 +3,20 @@ import { computed, defineComponent } from 'vue';
 import { organization } from '../../organization';
 
 /**
- * Sign-in is by employee ID, not email — see App\Http\Requests\Auth\LoginRequest,
+ * Sign-in takes **either** the employee ID or the email address, in one field.
+ *
+ * Two boxes, or a toggle between them, would ask the person to classify their
+ * own identifier before they may type it; the server already knows which it
+ * is from the shape of the string. See App\Http\Requests\Auth\LoginRequest,
  * which is also where the rate limiting lives.
  */
 export default defineComponent({
     name: 'Login',
     components: { Head, Link },
     props: {
-        canRegister: { type: Boolean, default: true },
     },
     setup() {
-        const form = useForm({ employee_id: '', password: '', remember: false });
+        const form = useForm({ login: '', password: '', remember: false });
         const submit = () => form.post('/login', { onFinish: () => form.reset('password') });
         const page = usePage();
         const success = computed(() => page.props.flash?.success);
@@ -45,12 +48,15 @@ export default defineComponent({
                             <h1 class="text-xl font-semibold uppercase tracking-wide text-slate-900">Sign in</h1>
                         </div>
                     </div>
-                    <p class="mt-5 text-sm text-slate-600">Use the employee ID issued to you by the office.</p>
+                    <p class="mt-5 text-sm text-slate-600">Use the employee ID issued to you by the office, or the email address on your account.</p>
                     <p v-if="success" class="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{{ success }}</p>
+                    <!-- One field for both. Which of the two it is comes from
+                         the shape of what was typed, on the server, so the
+                         person never has to say. -->
                     <label class="mt-8 block">
-                        <span class="required-label text-sm font-semibold text-slate-700">Employee ID</span>
-                        <input v-model="form.employee_id" autocomplete="username" placeholder="e.g. EMP-0001" class="field" :class="{ 'border-rose-500': form.errors.employee_id }" />
-                        <p v-if="form.errors.employee_id" class="error">{{ form.errors.employee_id }}</p>
+                        <span class="required-label text-sm font-semibold text-slate-700">Employee ID or email</span>
+                        <input v-model="form.login" autocomplete="username" placeholder="e.g. EMP-0001 or you@example.com" class="field" :class="{ 'border-rose-500': form.errors.login }" />
+                        <p v-if="form.errors.login" class="error">{{ form.errors.login }}</p>
                     </label>
                     <label class="mt-5 block">
                         <span class="flex items-center justify-between">
@@ -65,9 +71,13 @@ export default defineComponent({
                         <span class="cursor-pointer text-sm font-medium text-slate-700">Remember me</span>
                     </label>
                     <button type="submit" :disabled="form.processing" class="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#00aeef] px-5 py-3 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-[#008dcc] disabled:bg-slate-400">{{ form.processing ? 'Signing in…' : 'Sign in' }}<i v-if="!form.processing" class="fa-solid fa-arrow-right" aria-hidden="true"></i></button>
-                    <p v-if="canRegister" class="mt-6 text-center text-sm text-slate-600">
-                        No account yet?
-                        <Link href="/register" class="font-semibold text-[#07559e] hover:text-[#043d78]">Register here</Link>
+                    <!-- Where an account comes from, since there is no
+                         sign-up page to send anybody to. A form that simply
+                         refuses an unknown employee ID, saying nothing about
+                         how to get one, is a dead end for exactly the person
+                         who has just joined the office. -->
+                    <p class="mt-6 text-center text-sm text-slate-600">
+                        No account yet? Accounts are created by an administrator — ask your office's DocTrack administrator to set one up.
                     </p>
                 </form>
             </div>

@@ -5,6 +5,11 @@ import useCloseOnTutorial from '../composables/useCloseOnTutorial';
 /**
  * Where should this go?
  *
+ * `confirm` carries the chosen folder's public id **and its name**. A caller
+ * that acts immediately — Move, Copy — needs only the id, but one that shows
+ * the choice back to somebody before they submit, like the upload form's
+ * destination, cannot get a name out of an id it never fetched the tree for.
+ *
  * Move and Copy both used to send the folder the person was already looking at
  * as the destination, which made Move a no-op and Copy a one-way trip to the
  * root. There was nowhere to say "that one" — so this is that.
@@ -32,11 +37,19 @@ export default defineComponent({
     emits: ['close', 'confirm'],
     props: {
         open: { type: Boolean, default: false },
-        /** 'move' or 'copy' — wording only; the endpoint is the caller's. */
+        /** 'move', 'copy' or 'upload' — wording only; the endpoint is the caller's. */
         action: { type: String, default: 'move' },
         /** The rows being moved or copied: [{ kind, public_id, name }]. */
         items: { type: Array, default: () => [] },
         processing: { type: Boolean, default: false },
+        /**
+         * Whether to offer "New folder in …".
+         *
+         * The endpoint behind it is gated on `files.create`, so a caller
+         * whose person does not hold that grant passes false rather than
+         * showing a control that answers 403.
+         */
+        canCreate: { type: Boolean, default: true },
         error: { type: String, default: '' },
     },
     setup(props, { emit }) {
@@ -189,10 +202,16 @@ export default defineComponent({
         const target = computed(() => selected.value?.public_id ?? root.value?.public_id ?? null);
         const targetLabel = computed(() => selected.value?.name ?? root.value?.name ?? 'My Files');
 
-        const title = computed(() => (props.action === 'copy' ? 'Copy to…' : 'Move to…'));
-        const confirmLabel = computed(() => (props.action === 'copy'
-            ? `Copy here`
-            : `Move here`));
+        const title = computed(() => ({
+            copy: 'Copy to…',
+            upload: 'Save to…',
+            move: 'Move to…',
+        })[props.action] ?? 'Move to…');
+        const confirmLabel = computed(() => ({
+            copy: 'Copy here',
+            upload: 'Save here',
+            move: 'Move here',
+        })[props.action] ?? 'Move here');
         const summary = computed(() => {
             if (props.items.length === 1) return props.items[0].name;
 
@@ -210,13 +229,13 @@ export default defineComponent({
         :open="open"
         :processing="processing"
         :title="title"
-        :message="summary + ' will be ' + (action === 'copy' ? 'copied' : 'moved') + ' into the folder you choose.'"
+        :message="summary + ' will be ' + ({ copy: 'copied', upload: 'saved', move: 'moved' }[action] ?? 'moved') + ' into the folder you choose.'"
         :confirm-label="confirmLabel"
         :confirm-disabled="target === null"
         icon="fa-solid fa-folder-tree"
         wider
         @close="$emit('close')"
-        @confirm="$emit('confirm', target)">
+        @confirm="$emit('confirm', target, targetLabel)">
         <div class="text-left">
             <!-- Where the picker is looking. The first crumb is always the top
                  of the person's own storage, which is a real destination. -->
@@ -256,13 +275,13 @@ export default defineComponent({
                  choosing somewhere that already exists — stays uncluttered. -->
             <div class="mt-3">
                 <button
-                    v-if="!creating"
+                    v-if="canCreate && !creating"
                     type="button"
                     class="inline-flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm font-bold text-[#07559e] transition hover:bg-sky-50"
                     @click="startCreating">
                     <i class="fa-solid fa-folder-plus" aria-hidden="true"></i>New folder in {{ targetLabel }}
                 </button>
-                <div v-else class="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <div v-else-if="canCreate" class="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                     <span class="text-xs font-semibold uppercase tracking-wide text-slate-500">New folder in {{ targetLabel }}</span>
                     <div class="mt-2 flex flex-wrap items-start gap-2">
                         <label class="min-w-0 flex-1">

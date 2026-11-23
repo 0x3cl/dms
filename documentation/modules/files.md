@@ -108,7 +108,7 @@ It is nullable now and nothing writes it. It holds the old public-disk path so r
 php artisan files:import-documents [--dry-run]
 ```
 
-Per document: ensure a `Tracked Documents {year}` folder in the uploader's tree, create the `files` row, copy the bytes to the private disk, set `file_id`, and move the QR label. Idempotent, transactional per document, and a failure is reported and skipped so the rest carry over.
+Per document: ensure a `Tracked Documents {year}` folder in the uploader's tree (this importer alone still does — it is placing files that *were* filed that way), create the `files` row, copy the bytes to the private disk, set `file_id`, and move the QR label. Idempotent, transactional per document, and a failure is reported and skipped so the rest carry over.
 
 The bytes are **copied, not moved**, and the source is left in place: the command has to be re-runnable, and a half-finished move that has already deleted its source is not recoverable. Only once it reports nothing left to do is it safe to delete `storage/app/public/documents`.
 

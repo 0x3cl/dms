@@ -6,6 +6,7 @@ use App\Enums\DocumentVisibility;
 use App\Enums\FileAbility;
 use App\Enums\FileCategory;
 use App\Enums\FileVisibility;
+use App\Models\Document;
 use App\Models\DocumentType;
 use App\Models\File;
 use App\Models\Folder;
@@ -233,6 +234,53 @@ class FileManagerController extends Controller
                 ),
             );
 
+        /*
+         * Withdrawn documents, in the trash with everything else.
+         *
+         * The register's own Deleted tab is where somebody working through
+         * the register will look, but "I deleted something and want it back"
+         * is answered by the Trash — so a soft-deleted thing that appears
+         * nowhere here is a thing people hunt for on the one screen named
+         * after the question. Both read `Document::withdrawnBy()`, which is
+         * the single statement of what somebody has withdrawn.
+         *
+         * **Top level only**, and never while browsing inside a deleted
+         * folder: a document is not in a folder — its *file* is, and that
+         * file was not deleted by withdrawing the document. Listing it under
+         * a folder would claim a containment that does not exist.
+         *
+         * Unpaginated beside a paginated file list, for the same reason the
+         * folders are: this is one person's withdrawn documents, it is short
+         * by construction, and a second paginator on one screen is two page
+         * numbers in one query string.
+         */
+        $documents = $folder === null
+            ? Document::query()
+                ->withdrawnBy($user->id)
+                ->matching($search)
+                ->orderByDesc('deleted_at')
+                ->limit(50)
+                ->get()
+                ->map(fn (Document $document): array => [
+                    'id' => $document->id,
+                    'title' => $document->title,
+                    'code' => $document->code,
+                    'type' => $document->type,
+                    'visibility' => $document->visibility->value,
+                    'deleted_at' => $document->deleted_at?->toIso8601String(),
+                    'file_name' => $document->file_name,
+                    /*
+                     * Per row, like every other `can` in this module, rather
+                     * than once for the screen: the rows are rendered by the
+                     * same grid and table the files are, which read each
+                     * row's own permission. The grant is the documents
+                     * module's — restoring is the mirror of deleting.
+                     */
+                    'can_restore' => $user->can('documents.delete'),
+                ])
+                ->all()
+            : [];
+
         return Inertia::render('files/trash', [
             'files' => $this->applySort($files, $sort, $direction)
                 ->paginate($entries)
@@ -249,9 +297,15 @@ class FileManagerController extends Controller
             'breadcrumbs' => $folder ? $this->trashedBreadcrumbs($folder) : [],
             'filters' => [...$this->filters($request), 'sort' => $sort, 'direction' => $direction],
             'entriesOptions' => self::ENTRY_OPTIONS,
+            'documents' => $documents,
             'can' => [
                 'restore' => $user->can('files.edit'),
                 'purge' => $user->can('files.delete'),
+                // Restoring a document is the document module's grant, not
+                // the file module's: this screen lists them, it does not own
+                // them. A person with storage but no document rights sees
+                // nothing here, because the list is their own withdrawals.
+                'restoreDocuments' => $user->can('documents.delete'),
             ],
         ]);
     }

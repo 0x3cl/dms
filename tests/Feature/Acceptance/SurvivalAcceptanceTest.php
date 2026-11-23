@@ -326,7 +326,7 @@ class SurvivalAcceptanceTest extends TestCase
 
         // A closed account cannot sign in, and still owns its history.
         $this->assertFalse($this->post('/login', [
-            'employee_id' => $uploader->employee_id,
+            'login' => $uploader->employee_id,
             'password' => 'password',
         ])->isRedirect('/dashboard'));
     }

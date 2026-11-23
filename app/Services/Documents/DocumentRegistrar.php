@@ -35,12 +35,14 @@ use Illuminate\Support\Facades\Storage;
  * registrar, two callers.
  *
  * It takes an **already stored** `File` rather than an upload, because the two
- * callers store differently and should keep doing so: the document register
- * files into "Tracked Documents {year}" because its form has no folder field,
- * while My Files puts it in the folder the person is looking at — which they
- * chose by navigating there, and overriding that would read as a failed
- * upload. Nothing downstream depends on the path: `AccessResolver::forFile()`
- * finds the document through `file_id`.
+ * callers store differently and should keep doing so: My Files puts it in the
+ * folder the person is looking at — which they chose by navigating there, and
+ * overriding that would read as a failed upload — while the register's form
+ * asks, with a destination picker defaulting to the top of the uploader's own
+ * storage. Neither invents a folder; the register used to create a
+ * `Tracked Documents {year}` one, which is the system arranging somebody
+ * else's filing for them. Nothing downstream depends on the path:
+ * `AccessResolver::forFile()` finds the document through `file_id`.
  */
 class DocumentRegistrar
 {

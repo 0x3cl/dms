@@ -24,6 +24,8 @@ export default defineComponent({
     props: {
         folders: { type: Array, default: () => [] },
         files: { type: Array, default: () => [] },
+        /** Withdrawn documents, in `trash` mode only — see FileTable. */
+        documents: { type: Array, default: () => [] },
         folderHref: { type: Function, required: true },
         selected: { type: Array, default: () => [] },
         selectable: { type: Boolean, default: true },
@@ -47,10 +49,14 @@ export default defineComponent({
     },
     template: `
     <div class="mt-6">
-        <div v-if="folders.length === 0 && files.length === 0" class="rounded-2xl border border-dashed border-slate-300 px-6 py-16 text-center">
-            <span class="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-xl text-slate-400" aria-hidden="true"><i class="fa-solid fa-folder-open"></i></span>
-            <p class="mt-4 font-bold uppercase tracking-wide text-slate-700">Nothing here</p>
-            <p class="mt-1 text-sm text-slate-500">Upload a file or create a folder to get started.</p>
+        <!-- The trash's empty state is its own sentence. "Upload a file or
+             create a folder to get started" is advice about My Files, and
+             reading it in the trash tells somebody they are on the wrong
+             screen when they are on the right one. -->
+        <div v-if="folders.length === 0 && files.length === 0 && documents.length === 0" class="rounded-2xl border border-dashed border-slate-300 px-6 py-16 text-center">
+            <span class="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-xl text-slate-400" aria-hidden="true"><i :class="mode === 'trash' ? 'fa-solid fa-trash-can' : 'fa-solid fa-folder-open'"></i></span>
+            <p class="mt-4 font-bold uppercase tracking-wide text-slate-700">{{ mode === 'trash' ? 'Trash is empty' : 'Nothing here' }}</p>
+            <p class="mt-1 text-sm text-slate-500">{{ mode === 'trash' ? 'Files, folders and documents you delete wait here until you restore them.' : 'Upload a file or create a folder to get started.' }}</p>
         </div>
 
         <div v-else class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -131,6 +137,39 @@ export default defineComponent({
                     <Badge v-if="accessBadge(file)" :tone="accessBadge(file).tone" :title="accessBadge(file).hint">
                         <i :class="accessBadge(file).icon + ' mr-1.5'" aria-hidden="true"></i>{{ accessBadge(file).label }}
                     </Badge>
+                </div>
+            </article>
+
+            <!--
+                A withdrawn document, as a card of the same skeleton.
+
+                It is in the grid rather than in a panel of its own because
+                the trash is one question — "what did I delete" — and a second
+                list on that screen reads as a second trash. What a document
+                *is* differs from a file, which is what the card says: a
+                tracking code instead of a size, and the note that its file
+                was never deleted.
+            -->
+            <article v-for="document in documents" :key="'document-' + document.id" class="group relative flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-sky-300">
+                <div class="flex items-start justify-between gap-2">
+                    <span></span>
+                    <ActionMenu
+                        v-if="document.can_restore"
+                        :items="[{ key: 'restore', label: 'Restore', icon: 'fa-solid fa-rotate-left', hint: 'Back onto the register under ' + document.code }]"
+                        @select="$emit('act', { item: document, kind: 'document', action: 'restore' })" />
+                </div>
+
+                <span class="flex min-h-[7rem] items-center justify-center overflow-hidden rounded-xl bg-slate-50 text-4xl text-slate-400">
+                    <i class="fa-solid fa-file-circle-xmark" aria-hidden="true"></i>
+                </span>
+
+                <div class="min-w-0 text-left">
+                    <p class="truncate font-bold text-slate-800" :title="document.title">{{ document.title }}</p>
+                    <p class="mt-1 truncate font-mono text-xs text-slate-500">{{ document.code }}</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                    <Badge tone="slate">Withdrawn document</Badge>
+                    <span class="text-xs text-slate-400">File kept</span>
                 </div>
             </article>
         </div>

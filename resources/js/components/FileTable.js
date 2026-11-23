@@ -23,6 +23,16 @@ export default defineComponent({
     props: {
         folders: { type: Array, default: () => [] },
         files: { type: Array, default: () => [] },
+        /**
+         * Withdrawn documents, in `trash` mode only.
+         *
+         * A third kind of row rather than a second list. They were a panel of
+         * their own above the table, which read as two trashes on one screen
+         * — and left the table beneath them announcing "nothing here" while
+         * the trash plainly held five things. What a row *is* differs, which
+         * is what the columns are for; what a trash *is* does not.
+         */
+        documents: { type: Array, default: () => [] },
         folderHref: { type: Function, required: true },
         sort: { type: String, default: 'name' },
         direction: { type: String, default: 'asc' },
@@ -150,8 +160,40 @@ export default defineComponent({
                         <ActionMenu v-if="actionsFor(file, 'file').length" :items="actionsFor(file, 'file')" @select="act(file, 'file', $event)" />
                     </td>
                 </tr>
-                <tr v-if="folders.length === 0 && files.length === 0">
-                    <td :colspan="selectable ? 7 : 6" class="px-4 py-12 text-center text-slate-500">Nothing here yet.</td>
+                <!--
+                    A withdrawn document: no folder, no size, and the only way
+                    back is the register. The columns say so rather than being
+                    left blank, because an empty cell reads as missing data.
+                -->
+                <tr v-for="document in documents" :key="'document-' + document.id" class="border-b border-slate-100 hover:bg-sky-50/50">
+                    <td v-if="selectable" class="px-4 py-4"></td>
+                    <td class="px-4 py-4">
+                        <div class="flex items-start gap-3">
+                            <span class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
+                                <i class="fa-solid fa-file-circle-xmark" aria-hidden="true"></i>
+                            </span>
+                            <div class="min-w-0">
+                                <p class="block max-w-[300px] truncate font-bold text-slate-800" :title="document.title">{{ document.title }}</p>
+                                <p class="mt-1 font-mono text-xs font-semibold text-slate-500">{{ document.code }}</p>
+                            </div>
+                        </div>
+                    </td>
+                    <td class="px-4 py-4"><span class="text-sm text-slate-600">The register</span></td>
+                    <td class="px-4 py-4 text-slate-600">Me</td>
+                    <!-- Withdrawing a document never deleted its file, and
+                         this is where somebody deciding whether to restore it
+                         needs to be told so. -->
+                    <td class="px-4 py-4 text-xs text-slate-400">File kept</td>
+                    <td class="px-4 py-4 text-slate-600">{{ formatTimestamp(document.deleted_at) }}</td>
+                    <td class="whitespace-nowrap px-4 py-4 text-right">
+                        <ActionMenu
+                            v-if="document.can_restore"
+                            :items="[{ key: 'restore', label: 'Restore', icon: 'fa-solid fa-rotate-left', hint: 'Back onto the register under ' + document.code }]"
+                            @select="$emit('act', { item: document, kind: 'document', action: 'restore' })" />
+                    </td>
+                </tr>
+                <tr v-if="folders.length === 0 && files.length === 0 && documents.length === 0">
+                    <td :colspan="selectable ? 7 : 6" class="px-4 py-12 text-center text-slate-500">{{ mode === 'trash' ? 'Nothing in the trash.' : 'Nothing here yet.' }}</td>
                 </tr>
             </tbody>
         </table>

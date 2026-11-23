@@ -1816,13 +1816,22 @@ export default defineComponent({
                     <span class="text-sm font-semibold text-slate-700">What the link allows</span>
                     <select v-model="linkForm.ability" class="field">
                         <!--
-                            Offered only where it means something. On a
-                            restricted document "people who already have
-                            access" is the tagged list; on a public one it is
-                            everybody, so the option would be a second name
-                            for View only.
+                            Offered at every level, including public, and it
+                            means the same thing at each: the uploader and
+                            the people tagged on this document, nobody else.
+
+                            It was hidden on a public document, on the
+                            reasoning that "people who already have access"
+                            is everybody there — and the resolver agreed,
+                            answering the term by asking what the holder
+                            could do with no link at all. So the one control
+                            that says "only the people on this document" did
+                            nothing on exactly the documents somebody is most
+                            likely to be careless with. Both halves are
+                            fixed: the option is offered, and the term
+                            resolves the named list wherever it is set.
                         -->
-                        <option v-if="visibility && visibility.restricted" value="restricted">Restricted — people with access only</option>
+                        <option value="restricted">Restricted</option>
                         <option value="view">View only</option>
                         <option value="download">View and download</option>
                     </select>
@@ -1836,8 +1845,18 @@ export default defineComponent({
                         photographs the folder it is printed on, so the sentence
                         says so in those words.
                     -->
+                    <!-- What "restricted" means depends on the level, so the
+                         sentence says which one is in force rather than
+                         describing a tagged list to somebody whose document
+                         is open to the whole office. -->
                     <p v-if="linkForm.ability === 'restricted'" class="mt-1 text-xs text-slate-500">
                         The link opens only for you and the people tagged on this document. Anyone else is told it exists and is restricted — so a copy of the URL, or a photograph of the printed label, gives nothing away.
+                        <!-- On a public document this closes the link and
+                             nothing else: the tracking code still opens the
+                             document for anybody, which is what the level
+                             means. Saying so stops it reading as a way to
+                             take a public document back. -->
+                        <span v-if="visibility && !visibility.restricted">This closes the link only — the document is {{ visibility.label.toLowerCase() }}, so anybody can still open it with its tracking code.</span>
                     </p>
                     <p v-else class="mt-1 text-xs text-slate-500">
                         <span v-if="visibility && visibility.restricted" class="font-semibold text-amber-700">Anyone holding this URL can open the document without an account, even though it is {{ visibility.label.toLowerCase() }}.</span>

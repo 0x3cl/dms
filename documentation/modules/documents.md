@@ -17,7 +17,7 @@ The core of the application. A staff member uploads an office document; it is st
 | `app/Models/DocumentDownload.php` | One file release; `register()` is the only writer |
 | `database/seeders/DocumentTypeSeeder.php` | The nine types. **Required** — no type, no upload |
 | `app/Notifications/PrivateDocumentShared.php` | The in-app notice a recipient gets |
-| `resources/js/pages/documents/` | `index` (three tabs), `form`, `show`, `logs`, `scan`, `track`, `upload-success`, `download-logs` |
+| `resources/js/pages/documents/` | `index` (tabs, Deleted included), `form`, `show`, `logs`, `scan`, `track`, `upload-success`, `download-logs` |
 | `resources/js/components/QrScanner.js` | The camera reader |
 | `resources/js/components/VisibilityBadge.js` | The document pill — three levels, tone and icon derived from the value |
 
@@ -104,8 +104,8 @@ URL survives it.
 
 > **Whether the label is a bearer credential is the link's term.** A document
 > restricted to a named list gets its link on `ShareAbility::Restricted`,
-> which resolves to the holder's own access: whoever photographs the folder
-> learns the classification and nothing else. A public document's link, and
+> which resolves to the document's named audience: whoever photographs the
+> folder learns that the document exists and that it is not theirs to open. A public document's link, and
 > any link its uploader deliberately widens to view or download, *is* a bearer
 > credential — better than a code, which could not be revoked at all, but a
 > trade. So `downloadQr()` is restricted to whoever may share the document,
@@ -136,6 +136,16 @@ Applied by `view()`, `viewByCode()` and `accessFile()`.
 
 > **Trap.** `viewByCode()` (track-by-code) originally skipped the gate entirely, and `edit`/`update`/`destroy` had no ownership check at all. Both are covered by `tests/Feature/DocumentAuthorizationTest.php`; do not let either regress.
 
+### Where the file is saved
+
+The upload form has a **Save to** field: the destination is shown as "My Files" until somebody chooses otherwise, a *Choose folder* button opens `FolderPickerModal` — the same picker Move and Copy use, which can **create a folder from inside the dialog** — and a reset link puts it back. The form posts `folder`, a folder's public id, and an empty value means the top of the uploader's own storage.
+
+`DocumentController::destinationFor()` resolves it, asking `AccessResolver` for `FileAbility::Rename`: the same question the picker's own tree is built from, so every folder it offers is one an upload can land in. A destination the uploader cannot write into is **404, not silently swapped for their root** — an upload that lands somewhere other than where it was sent is the failure a picker exists to prevent.
+
+The register used to create a `Tracked Documents {year}` folder and file everything there, reasoning that the form had no folder field and that one folder per year keeps a long office's root tidy. The first half was true and the fix was to give the form the field; the second was the system arranging somebody else's storage, and what it produced was a folder nobody made holding files people could not find — they looked in My Files, where they had put everything else.
+
+The picker's two controls are gated on `can.chooseFolder` (`files.read`) and `can.createFolder` (`files.create`), computed by the server: they work through the file manager's own endpoints, and a role that can file a document but not browse storage would otherwise meet a control that answers 403. Without it the upload lands at the root, which is the default anyway.
+
 ### Changing who it is shared with
 
 The **level** is set at upload and is not on the edit form: reclassifying is a question about readers who already hold the document, and the part of it the office needs is answered on the share panel, by the link.
@@ -151,6 +161,24 @@ The **tagged list is editable**, on the same form, through the same `RecipientPi
 - Changing the list at all needs `documents.share`, the same grant `store()` asks for, checked only when something actually changes.
 
 The rows and their trail entries commit **with** the rest of the edit; the notifications are sent **after** the commit, because a notification sent inside a transaction that then rolls back is a message about something that did not happen.
+
+### Withdrawing a document, and the way back
+
+`documents` is soft-deleted, so `DocumentController::destroy()` stamps `deleted_at` and nothing more. The document comes off every screen — the global scope hides it from the register, the dashboard, search and tracking-code lookup — while the row, the tracking code, the recipient rows and the whole trail stay exactly as they were. The **file is not touched at all**: a tracked document's bytes stay in My Files, and `files:purge` still refuses to collect them, because `reasonToKeep()` asks `$file->document()->withTrashed()->exists()`.
+
+That half was always true and the other half was missing: nothing listed a withdrawn document and no route restored one, so Delete was a one-way door whose only undo was a hand-written `UPDATE`. A soft delete nobody can reach is just a row nobody can account for.
+
+The register's **Deleted tab** is that other half — `Document::onlyTrashed()->uploadedBy($user)`, and `POST /documents/{document}/restore`:
+
+- **The tab appears only when it has contents.** A permanent fourth tab reading "(0)" on every register in the office is chrome about an absence.
+- **Your own uploads only, administrator included.** Restoring mirrors deleting and `destroy()` is uploader-only; a screen listing other people's withdrawn documents would also disclose what they decided to take off the register.
+- **The route binds `withTrashed()`.** Its subject is by definition soft-deleted, and without it the model binding applies the global scope and the one route that exists to reach a trashed document 404s on all of them. It is gated on `documents.delete` — the grant that put the document there — because a second permission would be a role holding half of one act.
+- **A row on that tab offers View details and Restore, and the row itself is inert.** Open, Copy link and the label all point at routes that apply the scope and would 404; an action that cannot work is worse than a missing one, because the reader concludes the document is broken rather than withdrawn.
+- **Restoring writes no trail entry**, and the symmetry is what decides it: withdrawing writes none either, so a restore that wrote a row would leave the history saying a document came back from somewhere it is never recorded as having gone.
+
+**The Trash lists them too, and that is not a second trash.** "I deleted something and want it back" is answered by the screen named after the question, so a soft-deleted thing that appears nowhere on it is a thing people hunt for — which is exactly what happened. Both screens read `Document::withdrawnBy()`, one statement of what somebody has withdrawn, because two hand-built `onlyTrashed()` queries is how one of them quietly starts showing a document the other does not. On the Trash they are **rows in the same grid and table the files use**, not a list of their own. They began as a panel above the table, which read as two trashes on one screen and left the table beneath announcing "nothing here" while the trash plainly held five things: what a *row* is differs between a document and a file, which is what the columns are for, but what a *trash* is does not. A document's row says "The register" where a file says which folder it restores to, and "File kept" where a file gives its size — withdrawing a document never deleted its bytes, and the person deciding whether to restore it is exactly who needs telling. A document has no folder, so it is listed at the top level only and never inside a deleted folder, where it would claim a containment that does not exist. `can_restore` rides on each row and is `documents.delete`, not a file grant — the Trash lists them, it does not own them.
+
+The delete confirmation says all of this now. It used to say "cannot be undone", which was true of the screens and false of the data.
 
 ### Taking a viewer off
 
@@ -308,7 +336,7 @@ office files.
 
 `accessFile` checks the file exists on disk before writing any log, so a missing file does not leave a download recorded that never happened.
 
-## One page, three tabs
+## One page, and tabs
 
 "My Documents" and "All Documents" were two sidebar entries over two controller methods and two Vue pages listing the same table through different filters. They are **one** page now — All, Uploaded by me, Shared with me — because which of those somebody wants is a filter, not a destination.
 

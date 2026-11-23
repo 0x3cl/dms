@@ -321,6 +321,85 @@ class ShareLinkRouteTest extends TestCase
     }
 
     /**
+     * The restricted term is available at **every** level, public included,
+     * and it means the named list wherever it is set.
+     *
+     * The dialog used to hide it on a public document, reasoning that
+     * "people who already have access" is everybody there — and the resolver
+     * agreed, because it answered the term by asking what the holder could
+     * do with no link at all. So the one control that says "only the people
+     * on this document" did nothing on exactly the documents somebody is
+     * most likely to be careless with. It resolves the **named audience**
+     * now: the uploader and the tagged list, whatever the level.
+     */
+    public function test_a_restricted_link_on_a_public_document_opens_for_nobody_else(): void
+    {
+        $owner = User::factory()->create();
+        $tagged = User::factory()->create();
+        $file = app(FileStorage::class)->store(
+            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
+            app(FolderService::class)->rootFor($owner),
+            $owner,
+        );
+        $document = Document::factory()->create([
+            'user_id' => $owner->id,
+            'file_id' => $file->id,
+            'file_name' => $file->original_name,
+            'visibility' => DocumentVisibility::Public,
+        ]);
+
+        $link = app(SharingService::class)->createLink($document, ShareAbility::Restricted, $owner);
+        $document->allRecipients()->syncWithoutDetaching([$tagged->id => ['notified_at' => now()]]);
+
+        Auth::logout();
+        $this->sayWhoYouAre($link);
+
+        // A holder with no account: the page states the classification and
+        // the bytes answer 404, exactly as on a private document.
+        $this->get("/s/{$link->token}")
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('track/index', false)
+                ->where('result.open', false));
+        $this->get("/s/{$link->token}/file")->assertNotFound();
+
+        // The named people still reach it — that is what the term addresses.
+        $this->actingAs($tagged)->get("/s/{$link->token}")->assertRedirect();
+        $this->actingAs($owner)->get("/s/{$link->token}")->assertRedirect();
+    }
+
+    /**
+     * The document stays public; only the link is closed.
+     *
+     * A restricted link is a statement about one URL, never about the
+     * document — anybody may still open a public document by its tracking
+     * code, which is the door the classification actually describes.
+     */
+    public function test_a_restricted_link_does_not_close_the_public_document_itself(): void
+    {
+        $owner = User::factory()->create();
+        $file = app(FileStorage::class)->store(
+            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
+            app(FolderService::class)->rootFor($owner),
+            $owner,
+        );
+        $document = Document::factory()->create([
+            'user_id' => $owner->id,
+            'file_id' => $file->id,
+            'file_name' => $file->original_name,
+            'visibility' => DocumentVisibility::Public,
+        ]);
+
+        app(SharingService::class)->createLink($document, ShareAbility::Restricted, $owner);
+
+        Auth::logout();
+
+        $this->get("/track?code={$document->code}")
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('track/index', false)
+                ->where('result.open', true));
+    }
+
+    /**
      * A restricted link resolves to the **holder's own** access, which is
      * more than the term itself carries.
      *

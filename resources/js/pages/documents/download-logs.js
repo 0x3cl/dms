@@ -79,7 +79,7 @@ export default defineComponent({
                                  own title column: a free-text title that does
                                  not wrap pushes the IP, the person and the
                                  time off the right of the table. -->
-                            <td class="max-w-[14rem] px-4 py-4 font-bold text-slate-800 sm:max-w-[20rem] lg:max-w-[28rem]">
+                            <td class="max-w-[300px] px-4 py-4 font-bold text-slate-800">
                                 <Link v-if="download.document" :href="'/documents/view/' + download.document.code" class="block truncate hover:text-[#07559e]" :title="download.document.title">{{ download.document.title }}</Link>
                                 <span v-else>Deleted document</span>
                                 <span class="block font-mono text-xs font-normal text-slate-500">{{ download.document?.code ?? '—' }}</span>

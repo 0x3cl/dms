@@ -36,7 +36,12 @@ enum ShareAbility: string
     public function label(): string
     {
         return match ($this) {
-            self::Restricted => 'Restricted — people with access only',
+            // Just the word. The qualifier it carried — "people with access
+            // only" — described the old resolution, where the term deferred
+            // to whatever the document allowed; it now means the named list
+            // at every level, which `description()` says in full where there
+            // is room for a sentence.
+            self::Restricted => 'Restricted',
             self::View => 'Can view',
             self::Download => 'Can view and download',
             self::Manage => 'Can manage',
@@ -46,7 +51,7 @@ enum ShareAbility: string
     public function description(): string
     {
         return match ($this) {
-            self::Restricted => 'Opens only for the uploader and the people tagged on it. Anyone else is told it exists and is restricted.',
+            self::Restricted => 'Opens only for the uploader and the people tagged on it, whatever the document\'s level. Anyone else is told it exists and is restricted.',
             self::View => 'Open and preview it. No copy leaves the server.',
             self::Download => 'Open it, and take a copy.',
             self::Manage => 'Open, take a copy, rename, move, delete and share it on.',

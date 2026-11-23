@@ -1,9 +1,10 @@
 import { Head, Link, useForm } from '@inertiajs/vue3';
-import { computed, defineComponent, watch } from 'vue';
+import { computed, defineComponent, ref, watch } from 'vue';
 import AdminShell from '../../components/AdminShell';
 import Button from '../../components/Button';
 import Card from '../../components/Card';
 import ConfirmActionModal from '../../components/ConfirmActionModal';
+import FolderPickerModal from '../../components/FolderPickerModal';
 import RecipientPicker from '../../components/RecipientPicker';
 import SearchableSelect from '../../components/SearchableSelect';
 import ToggleSwitch from '../../components/ToggleSwitch';
@@ -30,7 +31,7 @@ import { registerHref } from '../../registerReturn';
  */
 export default defineComponent({
     name: 'DocumentForm',
-    components: { AdminShell, Button, Card, ConfirmActionModal, Head, Link, RecipientPicker, SearchableSelect, ToggleSwitch, UploadLimitsHint },
+    components: { AdminShell, Button, Card, ConfirmActionModal, FolderPickerModal, Head, Link, RecipientPicker, SearchableSelect, ToggleSwitch, UploadLimitsHint },
     props: {
         document: { type: Object, default: null },
         /** Who the document is shared with now — the live list, ids only. */
@@ -45,6 +46,15 @@ export default defineComponent({
          * and hid every permitted spreadsheet from the browser's own dialog.
          */
         limits: { type: Object, default: null },
+        /**
+         * What the destination picker may do, computed by the server.
+         *
+         * It reads and writes through the file manager's own endpoints, so a
+         * role that can file a document but cannot browse storage is not
+         * offered a control that would answer 403. The upload then lands at
+         * the top of their storage, which is the default regardless.
+         */
+        can: { type: Object, default: () => ({}) },
     },
     setup(props) {
         const isEditing = computed(() => Boolean(props.document));
@@ -58,6 +68,16 @@ export default defineComponent({
             file: null,
             // Only ever sent with a replacement — see the field's own comment.
             note: '',
+            /*
+             * Where in My Files the bytes land, as a folder's public id.
+             *
+             * Empty is the top of the person's own storage. The register used
+             * to file every upload into a `Tracked Documents {year}` folder it
+             * created itself — a folder nobody made, holding files people then
+             * could not find, because they went looking where they had put
+             * everything else.
+             */
+            folder: '',
             /*
              * The document's own level when editing, not the default. The
              * picker is rendered off `selected`, which is looked up by this
@@ -183,7 +203,28 @@ export default defineComponent({
             return parts.length ? `${parts.join(', and ')}.` : 'Are you sure you want to proceed?';
         });
 
-        return { backHref: registerHref(), cancel, confirm, confirmMessage, form, isEditing, proceed, request, selected, tagChanges, typeOptions };
+        /*
+         * The destination, chosen in the same picker Move and Copy use.
+         *
+         * Reused rather than rebuilt: it already fetches the tree the server
+         * says this person may write into, and a second folder chooser is a
+         * second answer to "where may this go".
+         */
+        const choosingFolder = ref(false);
+        const folderLabel = ref('My Files');
+        const chooseFolder = (publicId, name) => {
+            // Reset passes nothing, and the server reads an empty string as
+            // "the top of your storage" — so this control and the default
+            // agree on what choosing no folder means.
+            form.folder = publicId ?? '';
+            folderLabel.value = name ?? 'My Files';
+            choosingFolder.value = false;
+        };
+
+        return {
+            backHref: registerHref(), cancel, chooseFolder, choosingFolder, confirm, confirmMessage, folderLabel,
+            form, isEditing, proceed, request, selected, tagChanges, typeOptions,
+        };
     },
     template: `
     <Head :title="isEditing ? 'Edit document' : 'Upload document'" />
@@ -225,6 +266,34 @@ export default defineComponent({
                         as they are, and the file it replaces is kept in the document's version history.
                     </p>
                 </label>
+
+                <!--
+                    Where the file goes in My Files.
+
+                    Upload only: on an edit the file already has a home, and a
+                    replacement is a new version of it rather than a new file
+                    to place. Optional, and the default is the top of the
+                    person's own storage — the register used to invent a
+                    "Tracked Documents {year}" folder instead, which is the
+                    system arranging somebody else's filing for them.
+                -->
+                <div v-if="!isEditing && can.chooseFolder">
+                    <span class="text-sm font-semibold text-slate-700">Save to <span class="font-normal text-slate-500">(optional)</span></span>
+                    <div class="mt-2 flex flex-wrap items-center gap-3">
+                        <span class="inline-flex min-w-0 items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700">
+                            <i class="fa-solid fa-folder text-amber-500" aria-hidden="true"></i>
+                            <span class="max-w-[300px] truncate" :title="folderLabel">{{ folderLabel }}</span>
+                        </span>
+                        <button type="button" class="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm font-bold text-slate-700 transition hover:border-[#07559e] hover:text-[#07559e]" @click="choosingFolder = true">
+                            <i class="fa-solid fa-folder-tree" aria-hidden="true"></i>Choose folder
+                        </button>
+                        <button v-if="form.folder" type="button" class="text-sm font-semibold text-slate-500 transition hover:text-[#07559e]" @click="chooseFolder()">
+                            Reset to My Files
+                        </button>
+                    </div>
+                    <p v-if="form.errors.folder" class="error">{{ form.errors.folder }}</p>
+                    <p class="mt-1 text-xs text-slate-500">The document is tracked either way — this is only where its file sits in your storage.</p>
+                </div>
 
                 <!-- Only on edit, and only alongside a replacement: a note
                      about a file nobody is replacing has nothing to attach to.
@@ -375,6 +444,14 @@ export default defineComponent({
                 </div>
             </form>
         </Card>
+
+        <FolderPickerModal
+            :open="choosingFolder"
+            action="upload"
+            :can-create="Boolean(can.createFolder)"
+            :items="[{ kind: 'file', public_id: 'new', name: form.file ? form.file.name : 'this document' }]"
+            @close="choosingFolder = false"
+            @confirm="chooseFolder" />
 
         <ConfirmActionModal
             :open="confirm.open"

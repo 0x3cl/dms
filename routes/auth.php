@@ -5,7 +5,6 @@ use App\Http\Controllers\Auth\ConfirmablePasswordController;
 use App\Http\Controllers\Auth\NewPasswordController;
 use App\Http\Controllers\Auth\PasswordController;
 use App\Http\Controllers\Auth\PasswordResetLinkController;
-use App\Http\Controllers\Auth\RegisteredUserController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -16,12 +15,22 @@ use Illuminate\Support\Facades\Route;
  * is optional, and `users` has no `email_verified_at` column, so there is
  * nothing to verify. Reinstating verification means adding that column and
  * implementing MustVerifyEmail on the User model first.
+ *
+ * **There is no `register` route, and that is a removal rather than an
+ * omission.** Self-registration created a working account on the spot, with
+ * no approval and nothing checking that the employee ID was real or that the
+ * person worked here — so the only thing between a stranger and the register
+ * was a unique string they chose themselves. Accounts are created by an
+ * administrator on the Users screen, which already does everything
+ * registration did and one thing it could not: choose the role.
+ *
+ * Do not reinstate this as a route with an approval flag. A pending account
+ * is a second kind of account that every sign-in, every listing and every
+ * resolver then has to know about; an administrator creating the account is
+ * the same gate with nothing to maintain.
  */
 
 Route::middleware('guest')->group(function () {
-    Route::get('register', [RegisteredUserController::class, 'create'])->name('register');
-    Route::post('register', [RegisteredUserController::class, 'store']);
-
     Route::get('login', [AuthenticatedSessionController::class, 'create'])->name('login');
     Route::post('login', [AuthenticatedSessionController::class, 'store']);
 

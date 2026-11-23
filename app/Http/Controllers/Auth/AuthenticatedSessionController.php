@@ -17,9 +17,10 @@ class AuthenticatedSessionController extends Controller
      */
     public function create(): Response
     {
-        return Inertia::render('auth/login', [
-            'canRegister' => true,
-        ]);
+        // No props. `canRegister` went with self-registration: there is no
+        // sign-up page to offer, and a flag whose only value is `true` is a
+        // switch nothing can turn.
+        return Inertia::render('auth/login');
     }
 
     /**
@@ -39,6 +40,14 @@ class AuthenticatedSessionController extends Controller
 
     /**
      * Destroy an authenticated session.
+     *
+     * To the **sign-in page**, not the public landing page. Signing out is
+     * something somebody does at the end of a shift at a shared desk, and the
+     * next thing they or the next person needs is the form — the landing page
+     * is a step away from it, and it reads as "you have been put outside"
+     * rather than "you are signed out". It is also where every other way out
+     * of a session already lands: an expired session and
+     * `unauthorizedRedirect()` for a guest both go to `login`.
      */
     public function destroy(Request $request): RedirectResponse
     {
@@ -47,6 +56,6 @@ class AuthenticatedSessionController extends Controller
         $request->session()->invalidate();
         $request->session()->regenerateToken();
 
-        return redirect('/');
+        return redirect()->route('login')->with('success', 'You have been signed out.');
     }
 }

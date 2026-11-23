@@ -99,7 +99,23 @@ export default defineComponent({
             ...(props.can.all ? [{ key: 'all', label: 'All', count: props.counts.all }] : []),
             { key: 'mine', label: 'Uploaded by me', count: props.counts.mine },
             { key: 'shared', label: 'Shared with me', count: props.counts.shared },
+            /*
+             * What you withdrew, and the way back.
+             *
+             * Offered only when there is something in it. `documents` is
+             * soft-deleted, so a withdrawn document was always still there —
+             * but it appeared on no screen and had no restore, which made
+             * Delete a one-way door whose only undo was a hand-written
+             * UPDATE. A permanent fourth tab reading "(0)" on every register
+             * in the office would be chrome about an absence; a tab that
+             * appears when it has contents is the trash showing up exactly
+             * when it is the thing somebody is looking for.
+             */
+            ...(props.counts.deleted ? [{ key: 'deleted', label: 'Deleted', count: props.counts.deleted }] : []),
         ]);
+
+        /** Whether the tab on screen is the trash, which changes what a row offers. */
+        const viewingDeleted = computed(() => props.filters.tab === 'deleted');
 
         // ----------------------------------------------------------- tracking
         /*
@@ -142,6 +158,27 @@ export default defineComponent({
             });
         };
 
+        /*
+         * Restoring, confirmed like the delete it reverses.
+         *
+         * A confirmation for something harmless looks like friction, and it
+         * is not: a restored document goes back on the register under its own
+         * tracking code and becomes readable again by everybody it is shared
+         * with, which is a change other people see. The dialog says that
+         * rather than asking "are you sure".
+         */
+        const restoring = ref(null);
+        const confirmRestore = () => {
+            processing.value = true;
+            router.post(`/documents/${restoring.value.id}/restore`, {}, {
+                preserveScroll: true,
+                onFinish: () => {
+                    processing.value = false;
+                    restoring.value = null;
+                },
+            });
+        };
+
         /**
          * A row's actions, as data.
          *
@@ -161,6 +198,23 @@ export default defineComponent({
                 { key: 'copy', label: document.linkable ? 'Copy link' : 'Copy tracking code', icon: 'fa-solid fa-copy' },
                 { key: 'qr', label: 'View QR label', icon: 'fa-solid fa-qrcode' },
             ];
+
+            /*
+             * A withdrawn document offers one thing: the way back.
+             *
+             * Open, Copy link and the label all point at routes that apply
+             * the soft-delete scope and would answer 404 — an action that
+             * cannot work is worse than a missing one, because the reader
+             * concludes the document is broken rather than withdrawn. View
+             * details stays, because the modal renders the row already in
+             * hand and is the only way to read what is about to be restored.
+             */
+            if (viewingDeleted.value) {
+                return [
+                    { key: 'details', label: 'View details', icon: 'fa-solid fa-circle-info' },
+                    { key: 'restore', label: 'Restore', icon: 'fa-solid fa-rotate-left', tone: 'primary' },
+                ];
+            }
 
             if (props.filters.tab === 'mine') {
                 actions.push(
@@ -249,6 +303,11 @@ export default defineComponent({
         const openRow = (event, document) => {
             if (event.target.closest('button, a, input, [role="menu"], [role="dialog"]')) return;
 
+            // A withdrawn document has no page to open: every read route
+            // applies the soft-delete scope. The row is inert on that tab
+            // rather than navigating somebody into a 404.
+            if (viewingDeleted.value) return;
+
             router.visit(`/documents/view/${document.code}`);
         };
 
@@ -261,6 +320,12 @@ export default defineComponent({
 
             if (action.key === 'delete') {
                 deleting.value = document;
+
+                return;
+            }
+
+            if (action.key === 'restore') {
+                restoring.value = document;
 
                 return;
             }
@@ -292,7 +357,8 @@ export default defineComponent({
         };
 
         return {
-            act, activeFilters, applyFilters, closeTracking, confirmDelete, deleting, filtering, filters, formatTimestamp, load,
+            act, activeFilters, applyFilters, closeTracking, confirmDelete, confirmRestore, deleting, restoring, viewingDeleted,
+            filtering, filters, formatTimestamp, load,
             accent, downloadLabel, label, labelLoading, openRow,
             openTracking, page, processing, rowActions, search, switchTab, tabs, tracking,
             inspecting,
@@ -367,8 +433,8 @@ export default defineComponent({
                         <tr
                             v-for="document in documents.data"
                             :key="document.id"
-                            class="cursor-pointer border-b border-b-slate-100 border-l-[3px] transition hover:bg-sky-50/50"
-                            :class="accent(document.visibility)"
+                            class="border-b border-b-slate-100 border-l-[3px] transition hover:bg-sky-50/50"
+                            :class="[accent(document.visibility), viewingDeleted ? 'opacity-70' : 'cursor-pointer']"
                             @click="openRow($event, document)">
                             <td class="px-4 py-4">
                                 <!--
@@ -384,11 +450,22 @@ export default defineComponent({
                                     maximum rather than a width, so short
                                     titles still sit in a narrow column, and
                                     the full string is a tooltip and the first
-                                    thing on the document's own page.
+                                    thing on the document's own page. 300px is
+                                    the same cap the dashboard's lists use, so
+                                    a title reads the same length wherever it
+                                    appears in a list.
                                 -->
-                                <span class="block max-w-[14rem] truncate font-bold text-slate-800 sm:max-w-[22rem] lg:max-w-[32rem]" :title="document.title">{{ document.title }}</span>
+                                <span class="block max-w-[300px] truncate font-bold text-slate-800" :title="document.title">{{ document.title }}</span>
                                 <div class="mt-1 flex flex-wrap items-center gap-1.5">
                                     <VisibilityBadge :visibility="document.visibility" />
+                                    <!-- When it was withdrawn, on the tab where
+                                         that is the only thing distinguishing
+                                         one row from another. The level stays
+                                         beside it: a restored document comes
+                                         back at the level it left. -->
+                                    <span v-if="viewingDeleted && document.deleted_at" class="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                                        Withdrawn {{ formatTimestamp(document.deleted_at) }}
+                                    </span>
                                     <!--
                                         Beside the level, not instead of it:
                                         they answer different questions. The
@@ -468,6 +545,7 @@ export default defineComponent({
                         <tr v-if="documents.data.length === 0">
                             <td colspan="5" class="px-4 py-12 text-center text-slate-500">
                                 <span v-if="filters.tab === 'shared'">Nothing has been shared with you yet.</span>
+                                <span v-else-if="filters.tab === 'deleted'">Nothing withdrawn. Documents you delete wait here until you restore them.</span>
                                 <span v-else-if="filters.tab === 'mine'">You have not uploaded any documents yet.</span>
                                 <span v-else>No documents match the selected filters.</span>
                             </td>
@@ -593,16 +671,42 @@ export default defineComponent({
             </div>
         </ConfirmActionModal>
 
+        <!--
+            What deleting actually does, now that it can be undone.
+
+            This said "cannot be undone", which was true of the screens and
+            false of the data: the row is soft-deleted and always was. Saying
+            so is not a softening — a reader who believes a withdrawal is
+            irreversible either hesitates over a reversible act, or discovers
+            later that the thing they were told was gone is not, which is
+            worse for a register than either.
+        -->
         <ConfirmActionModal
             :open="deleting !== null"
             :processing="processing"
-            title="Delete this document?"
-            :message="'Deleting ' + (deleting?.title ?? '') + ' cannot be undone. Its trail stays on record.'"
+            title="Withdraw this document?"
+            :message="(deleting?.title ?? 'This document') + ' comes off the register and stops opening for everybody it is shared with. Its trail stays on record, its file stays in My Files, and you can restore it from the Deleted tab.'"
             confirm-label="Delete"
             tone="danger"
             icon="fa-solid fa-trash"
             @close="deleting = null"
             @confirm="confirmDelete" />
+
+        <!--
+            Confirmed like the delete it reverses, and for the same reason:
+            the people it affects are not on screen. A restored document is
+            readable again by everybody tagged on it, under the tracking code
+            already printed on paper.
+        -->
+        <ConfirmActionModal
+            :open="restoring !== null"
+            :processing="processing"
+            title="Restore this document?"
+            :message="(restoring?.title ?? 'This document') + ' goes back on the register under ' + (restoring?.code ?? 'its tracking code') + ', and opens again for everybody it is shared with.'"
+            confirm-label="Restore"
+            icon="fa-solid fa-rotate-left"
+            @close="restoring = null"
+            @confirm="confirmRestore" />
 
         <DocumentFilterModal
             :open="filtering"

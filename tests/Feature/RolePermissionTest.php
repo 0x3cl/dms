@@ -200,22 +200,47 @@ class RolePermissionTest extends TestCase
         $this->assertNull($response->viewData('page')['props']['auth']['role']);
     }
 
-    /** Self-registration lands on the least-privilege role, not on nothing. */
-    public function test_a_self_registered_account_becomes_staff(): void
+    /**
+     * There is no sign-up page, and nothing answers where one used to be.
+     *
+     * Self-registration created a working account on the spot, with no
+     * approval and nothing checking the employee ID was real. Accounts are
+     * created by an administrator on the Users screen now, so both verbs must
+     * 404 rather than quietly resolving to something else.
+     */
+    public function test_there_is_no_self_registration_route(): void
+    {
+        $this->get('/register')->assertNotFound();
+        $this->post('/register', ['employee_id' => 'EMP-9999'])->assertNotFound();
+
+        $this->assertFalse(User::query()->where('employee_id', 'EMP-9999')->exists());
+        $this->assertNull(app('router')->getRoutes()->getByName('register'));
+    }
+
+    /**
+     * An account an administrator creates still lands on a real role.
+     *
+     * `Staff` stopped being "what anyone who reaches the sign-up page gets"
+     * when that page was removed, and it is still the least-privilege floor —
+     * the Users screen is simply what chooses it now, deliberately, per
+     * account.
+     */
+    public function test_an_administrator_created_account_holds_the_role_it_was_given(): void
     {
         $division = Division::factory()->create();
         $section = $division->sections()->create(['code' => 'REC', 'name' => 'Records']);
 
-        $this->post('/register', [
-            'first_name' => 'New',
-            'last_name' => 'Person',
-            'employee_id' => 'EMP-9999',
-            'email' => 'new@example.test',
-            'division_id' => $division->id,
-            'section_id' => $section->id,
-            'password' => 'password',
-            'password_confirmation' => 'password',
-        ]);
+        $this->actingAs(User::factory()->superadmin()->create())
+            ->post('/users', [
+                'first_name' => 'New',
+                'last_name' => 'Person',
+                'employee_id' => 'EMP-9999',
+                'division_id' => $division->id,
+                'section_id' => $section->id,
+                'role' => Roles::STAFF,
+                'password' => 'password',
+                'password_confirmation' => 'password',
+            ])->assertSessionHasNoErrors();
 
         $user = User::where('employee_id', 'EMP-9999')->firstOrFail();
 

@@ -65,19 +65,45 @@ class DocumentController extends Controller
     /**
      * Where a tracked document's bytes are filed in the uploader's tree.
      *
-     * A document is a `files` row with a tracking jacket, so it has to live
-     * somewhere in the tree like anything else. One folder per year keeps a
-     * long-running office's root from becoming a flat list of thousands.
+     * **Where the uploader said**, and My Files itself when they said
+     * nothing. A document is a `files` row with a tracking jacket, so it
+     * lives in the tree like anything else — and where in the tree is the
+     * person's business, not the register's.
+     *
+     * It used to be a `Tracked Documents {year}` folder this method created
+     * on the spot, on the reasoning that the form had no folder field and
+     * needed *a* destination, and that one folder per year keeps a long
+     * office's root from becoming a flat list of thousands. The first half
+     * was true and has been fixed by giving the form the field; the second
+     * was the system arranging somebody else's storage for them. What it
+     * produced was a folder nobody made, holding files they then could not
+     * find — they went looking in My Files, where they had put everything
+     * else, and the office's own filing scheme was overridden by a default.
+     *
+     * An unreadable or unwritable destination is refused rather than
+     * silently swapped for the root: an upload that lands somewhere other
+     * than where it was sent is the failure this exists to prevent.
      */
-    private function trackedFolder(User $user): \App\Models\Folder
+    private function destinationFor(User $user, ?string $folderId): \App\Models\Folder
     {
         $root = $this->folders->rootFor($user);
-        $name = 'Tracked Documents '.now()->format('Y');
 
-        return \App\Models\Folder::query()
-            ->where('parent_id', $root->id)
-            ->where('name', $name)
-            ->first() ?? $this->folders->create($user, $root, $name);
+        if ($folderId === null || $folderId === '') {
+            return $root;
+        }
+
+        $folder = \App\Models\Folder::query()->where('public_id', $folderId)->first();
+
+        // `Rename` is the write ability on a folder, which is what the Move
+        // and Copy pickers resolve a destination by — the same question asked
+        // the same way, so a folder this picker offers is one an upload can
+        // actually land in.
+        abort_unless(
+            $folder !== null && $this->access->allows($user, $folder, FileAbility::Rename),
+            404,
+        );
+
+        return $folder;
     }
 
     /**
@@ -183,6 +209,24 @@ class DocumentController extends Controller
                 ->withExists(['recipients as shared_with_me' => fn ($recipients) => $recipients
                     ->where('users.id', $user->id)]),
             'shared' => $user->receivedDocuments()->getQuery()->with($uploader),
+            /*
+             * What you withdrew, and the way back.
+             *
+             * `documents` is soft-deleted, so a withdrawn document was always
+             * still there — it simply appeared on no screen and had no
+             * restore, which made "Delete" a one-way door whose only undo was
+             * a hand-written UPDATE. A trash is the honest shape for a soft
+             * delete; a soft delete nobody can reach is just a row nobody can
+             * account for.
+             *
+             * **Your own uploads only**, even for an administrator, because
+             * restoring is the mirror of deleting and `destroy()` is
+             * uploader-only. A screen listing other people's withdrawn
+             * documents would also be a disclosure: withdrawing something is
+             * a decision, and what somebody decided to take off the register
+             * is not a thing the register should go on showing to everybody.
+             */
+            'deleted' => Document::query()->withdrawnBy($user->id)->with($uploader),
             default => Document::query()->uploadedBy($user->id)->with($uploader),
         };
 
@@ -241,6 +285,11 @@ class DocumentController extends Controller
                 'all' => $maySeeAll ? Document::query()->count() : null,
                 'mine' => Document::query()->uploadedBy($user->id)->count(),
                 'shared' => $user->receivedDocuments()->count(),
+                // Counted like the others, so the tab says whether there is
+                // anything behind it before somebody opens it — a trash whose
+                // emptiness you learn only by navigating is a trash people
+                // check out of anxiety.
+                'deleted' => Document::query()->withdrawnBy($user->id)->count(),
             ],
             'can' => [
                 'all' => $maySeeAll,
@@ -265,7 +314,7 @@ class DocumentController extends Controller
             return $maySeeAll ? 'all' : 'mine';
         }
 
-        return in_array($tab, ['mine', 'shared'], true) ? $tab : 'mine';
+        return in_array($tab, ['mine', 'shared', 'deleted'], true) ? $tab : 'mine';
     }
 
     /**
@@ -294,6 +343,24 @@ class DocumentController extends Controller
             // Sent so the form can fail fast and show the rules. The gate is
             // UploadPolicy on the server; this is a courtesy to the browser.
             'limits' => $this->policy->limits(),
+            /*
+             * Whether to offer the destination picker at all.
+             *
+             * It walks `/files/destinations` and creates folders through
+             * `/files/folders`, which are the file manager's own grants — so
+             * a role that can file a document but cannot browse storage would
+             * otherwise be shown a control that fetches a 403 and sits
+             * spinning. Without it the upload simply lands at the top of
+             * their storage, which is the default anyway.
+             *
+             * Server-computed, as every `can` on a page is: the shared
+             * `auth.permissions` array is for navigation, never for deciding
+             * what a screen may do.
+             */
+            'can' => [
+                'chooseFolder' => $request->user()->can('files.read'),
+                'createFolder' => $request->user()->can('files.create'),
+            ],
         ]);
     }
 
@@ -319,6 +386,13 @@ class DocumentController extends Controller
             // literal. Seeded with exactly the old limits, so this changed no
             // behaviour on the day it landed.
             'file' => $this->policy->singleRules(),
+            /*
+             * Where in My Files the bytes land, as a folder's public id.
+             * Optional: nothing chosen means the top of the person's own
+             * storage, which is where somebody who did not think about it
+             * will look for the file.
+             */
+            'folder' => ['nullable', 'string'],
             'visibility' => ['required', Rule::enum(DocumentVisibility::class)],
             /*
              * Optional at every level, confidential included.
@@ -375,11 +449,15 @@ class DocumentController extends Controller
         // own opaque identifier. Nothing the uploader typed reaches the
         // filesystem, and nothing under that disk is reachable over the web.
         //
-        // Into "Tracked Documents {year}" because this form has no folder
-        // field — it needs *a* destination. That is a default, not a rule: a
-        // tracked upload from My Files stays in the folder the person chose by
-        // navigating there.
-        $stored = $this->files->store($request->file('file'), $this->trackedFolder($user), $user);
+        // Into the folder the uploader picked, or the top of their own
+        // storage — the same answer My Files gives, which is the point: a
+        // tracked upload is a file in somebody's storage and the register has
+        // no business filing it somewhere of its own invention.
+        $stored = $this->files->store(
+            $request->file('file'),
+            $this->destinationFor($user, $validated['folder'] ?? null),
+            $user,
+        );
 
         /*
          * Everything after the bytes — the code, the QR Tracker, the document
@@ -845,7 +923,11 @@ class DocumentController extends Controller
              */
             $stored = $this->fileManager->upload(
                 $request->user(),
-                $this->trackedFolder($request->user()),
+                // A legacy row with no file at all: its first stored file
+                // goes to the top of the uploader's storage, because this
+                // form has no destination field and inventing a folder for
+                // one file is what the register stopped doing.
+                $this->folders->rootFor($request->user()),
                 $replacement,
                 $request,
             );
@@ -875,7 +957,46 @@ class DocumentController extends Controller
 
         $document->delete();
 
-        return to_route('documents.index')->with('success', 'Document deleted.');
+        return to_route('documents.index')
+            ->with('success', 'Document withdrawn. You can restore it from the Deleted tab.');
+    }
+
+    /**
+     * Put a withdrawn document back on the register.
+     *
+     * The mirror of `destroy()`, and gated the same way: the uploader, and
+     * nobody else. `owns()` asks the resolver, which reads `user_id` — a
+     * column a soft delete does not touch — so a trashed document still knows
+     * whose it is.
+     *
+     * Nothing else has to be undone, which is the point of the delete having
+     * been soft. The tracking code, the QR label, the file, every recipient
+     * row and the whole trail were never altered; clearing `deleted_at` is
+     * the entire act, and the document comes back as the same document rather
+     * than as a copy of one.
+     *
+     * No trail entry, deliberately — and it is the symmetry that decides it,
+     * not indifference. Withdrawing a document writes nothing to
+     * `document_logs`, so a restore that wrote a row would leave the history
+     * saying a document came back from somewhere it is never recorded as
+     * having gone. If one of these should be on the trail, both should, and
+     * that is a change to what every reader of a document learns.
+     */
+    public function restore(Document $document): RedirectResponse
+    {
+        if (! $this->owns($document)) {
+            return $this->unauthorizedRedirect('Only the uploader can restore this document.');
+        }
+
+        // Already on the register. A second restore is a no-op rather than an
+        // error: the usual way to send one is a double-click.
+        if (! $document->trashed()) {
+            return back()->with('error', 'That document is already on the register.');
+        }
+
+        $document->restore();
+
+        return back()->with('success', $document->code.' is back on the register.');
     }
 
     /**

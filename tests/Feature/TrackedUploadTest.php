@@ -110,10 +110,10 @@ class TrackedUploadTest extends TestCase
     /**
      * It stays where the person put it.
      *
-     * They chose the folder by navigating to it. The register files into
-     * "Tracked Documents {year}" because its form has no folder field — that
-     * is a default for a screen with no answer, not a rule about where tracked
-     * documents live.
+     * They chose the folder by navigating to it. Neither door invents a
+     * folder any more: the register's form asks where to save and defaults to
+     * the top of the uploader's own storage, and this one leaves the file
+     * where the person already was.
      */
     public function test_a_tracked_upload_stays_in_the_browsed_folder(): void
     {
@@ -133,6 +133,118 @@ class TrackedUploadTest extends TestCase
 
         $this->assertSame($target->id, File::sole()->folder_id);
         $this->assertDatabaseMissing('folders', ['name' => 'Tracked Documents '.now()->year]);
+    }
+
+    /**
+     * The register files where the uploader said, and at the top of their own
+     * storage when they said nothing.
+     *
+     * It used to create a `Tracked Documents {year}` folder and put every
+     * upload in it — a folder nobody made, holding files people then went
+     * looking for in My Files, where they had put everything else.
+     */
+    public function test_a_register_upload_lands_at_the_top_of_my_files_by_default(): void
+    {
+        $user = $this->staff();
+
+        $this->actingAs($user)->post('/documents', [
+            'title' => 'Office Hours',
+            'document_type_id' => $this->typeId('MEMO'),
+            'visibility' => 'public',
+            'file' => UploadedFile::fake()->create('memo.pdf', 16, 'application/pdf'),
+        ])->assertSessionHasNoErrors();
+
+        $root = app(FolderService::class)->rootFor($user);
+
+        $this->assertSame($root->id, File::sole()->folder_id);
+        $this->assertDatabaseMissing('folders', ['name' => 'Tracked Documents '.now()->year]);
+    }
+
+    /** And into the folder the form's destination picker named. */
+    public function test_a_register_upload_lands_in_the_chosen_folder(): void
+    {
+        $user = $this->staff();
+        $folders = app(FolderService::class);
+        $target = $folders->create($user, $folders->rootFor($user), 'Memoranda');
+
+        $this->actingAs($user)->post('/documents', [
+            'title' => 'Office Hours',
+            'document_type_id' => $this->typeId('MEMO'),
+            'visibility' => 'public',
+            'folder' => $target->public_id,
+            'file' => UploadedFile::fake()->create('memo.pdf', 16, 'application/pdf'),
+        ])->assertSessionHasNoErrors();
+
+        $this->assertSame($target->id, File::sole()->folder_id);
+    }
+
+    /**
+     * A destination the uploader cannot write into is refused, not quietly
+     * swapped for their root: an upload that lands somewhere other than where
+     * it was sent is the failure the picker exists to prevent.
+     */
+    public function test_a_register_upload_refuses_somebody_elses_folder(): void
+    {
+        $user = $this->staff();
+        $other = $this->staff();
+        $folders = app(FolderService::class);
+        $theirs = $folders->create($other, $folders->rootFor($other), 'Private');
+
+        $this->actingAs($user)->post('/documents', [
+            'title' => 'Office Hours',
+            'document_type_id' => $this->typeId('MEMO'),
+            'visibility' => 'public',
+            'folder' => $theirs->public_id,
+            'file' => UploadedFile::fake()->create('memo.pdf', 16, 'application/pdf'),
+        ])->assertNotFound();
+
+        $this->assertSame(0, Document::query()->count());
+    }
+
+    /**
+     * A folder made from inside the picker is a destination like any other.
+     *
+     * The dialog posts to `files.folders.store`, the same endpoint the New
+     * folder dialog uses, so the naming rules and the ability check have one
+     * implementation; this asserts the round trip the form depends on —
+     * create, then file into it.
+     */
+    public function test_a_folder_created_from_the_picker_can_receive_the_upload(): void
+    {
+        $user = $this->staff();
+        $root = app(FolderService::class)->rootFor($user);
+
+        $created = $this->actingAs($user)
+            ->postJson('/files/folders', ['parent' => $root->public_id, 'name' => 'Memoranda'])
+            ->assertOk()
+            ->json('folder');
+
+        $this->actingAs($user)->post('/documents', [
+            'title' => 'Office Hours',
+            'document_type_id' => $this->typeId('MEMO'),
+            'visibility' => 'public',
+            'folder' => $created['public_id'],
+            'file' => UploadedFile::fake()->create('memo.pdf', 16, 'application/pdf'),
+        ])->assertSessionHasNoErrors();
+
+        $this->assertSame($created['public_id'], File::sole()->folder->public_id);
+    }
+
+    /**
+     * The picker is offered only to somebody who can use it: it reads and
+     * writes through the file manager's own endpoints, and a control that
+     * answers 403 is worse than one that is absent — the upload lands at the
+     * top of their storage either way.
+     */
+    public function test_the_upload_form_says_whether_the_destination_picker_is_usable(): void
+    {
+        $user = $this->staff();
+
+        $can = $this->actingAs($user)->get('/documents/upload')->assertOk()
+            ->viewData('page')['props']['can'];
+
+        $this->assertTrue($can['chooseFolder']);
+        $this->assertTrue($can['createFolder']);
     }
 
     /** The trail opens with the upload, as it does from the register. */

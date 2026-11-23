@@ -216,7 +216,7 @@ class DataIntegrityTest extends TestCase
 
         $this->assertSame($user->id, $file->fresh()->user_id);
 
-        $this->post('/login', ['employee_id' => 'EMP-7777', 'password' => 'password'])
+        $this->post('/login', ['login' => 'EMP-7777', 'password' => 'password'])
             ->assertSessionHasErrors();
         $this->assertGuest();
     }
@@ -488,12 +488,28 @@ class DataIntegrityTest extends TestCase
 
         $document = Document::query()->sole();
 
-        // An orphan of exactly the shape the old replacement produced: a
-        // document upload in the Tracked Documents folder with no document
-        // pointing at it.
+        /*
+         * An orphan of exactly the shape the old replacement produced: a
+         * document upload inside a `Tracked Documents {year}` folder with no
+         * document pointing at it.
+         *
+         * The folder is built by hand because nothing creates one any more —
+         * the register asks where to save and defaults to the top of the
+         * uploader's storage. That is precisely why the sweep still narrows
+         * by the name: it exists to collect **historical** wreckage, from the
+         * months when every tracked upload landed in such a folder, and a
+         * sweep that stopped asking would start collecting ordinary files
+         * somebody uploaded and never tracked.
+         */
+        $legacy = app(\App\Services\Files\FolderService::class)->create(
+            $user,
+            app(\App\Services\Files\FolderService::class)->rootFor($user),
+            'Tracked Documents '.now()->year,
+        );
+
         $orphan = app(FileStorage::class)->store(
             UploadedFile::fake()->createWithContent('superseded.pdf', str_repeat('old ', 400)),
-            $document->file->folder,
+            $legacy,
             $user,
         );
 

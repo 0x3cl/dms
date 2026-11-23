@@ -83,7 +83,7 @@ A role still held by an account is not deleted either — those accounts would b
 
 **`SUPERADMIN`** holds every permission the registry can generate, and is short-circuited by `Gate::before` regardless.
 
-**`Staff`** is the least-privilege floor assigned to every new and self-registered account: see the office structure, and create, revise, withdraw, download and share documents. **Not** the download register — it carries the IP address every copy went to — and no directory write.
+**`Staff`** is the least-privilege floor an administrator gives an ordinary account (there is no self-registration): see the office structure, and create, revise, withdraw, download and share documents. **Not** the download register — it carries the IP address every copy went to — and no directory write.
 
 `users.read` is deliberately absent, and it is the one grant that *narrowed* when the staff directory became the Users module. The old `employees.read` opened a people lookup. The screen that replaced it is where roles are handed out and other people's passwords are set, so reaching it is reaching the access model itself; the first grant does not imply the second. Staff keep `divisions.read` and `sections.read` — the office structure without the people.
 

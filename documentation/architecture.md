@@ -199,11 +199,11 @@ This replaced a deliberate open state, recorded here through the app's first lif
 
 All three are now gated. `HandleInertiaRequests` shares `auth.role` and `auth.permissions`, and `AdminShell` filters `MODULES` against the latter — each entry naming the permission that reaches it. The filter and the middleware are one mechanism in two halves and must change together.
 
-`Staff` is the least-privilege role self-registration assigns (`App\Support\Roles::STAFF_PERMISSIONS`): create, revise, withdraw, download and share documents; ask for access to one and see what they asked for; their own storage, including what was shared with them; and the office structure — `divisions.read` and `sections.read`. Not the download register, which carries the IP every copy went to. Not `files.manage`, which is the reach across everyone else's storage. And **not `users.read`**: that is the one grant that narrowed when the staff directory became the Users module, because the screen that replaced a names-and-sections lookup is where roles are handed out and other people's passwords are set. Note that `documents.write`/`documents.delete` are a *module* capability, not a licence over other people's uploads — `owns()` still decides which record.
+`Staff` is the least-privilege role (`App\Support\Roles::STAFF_PERMISSIONS`), and what an administrator gives an ordinary account: create, revise, withdraw, download and share documents; ask for access to one and see what they asked for; their own storage, including what was shared with them; and the office structure — `divisions.read` and `sections.read`. Not the download register, which carries the IP every copy went to. Not `files.manage`, which is the reach across everyone else's storage. And **not `users.read`**: that is the one grant that narrowed when the staff directory became the Users module, because the screen that replaced a names-and-sections lookup is where roles are handed out and other people's passwords are set. Note that `documents.write`/`documents.delete` are a *module* capability, not a licence over other people's uploads — `owns()` still decides which record.
 
 The sidebar filter and the route middleware are one mechanism in two halves and must land in the same change: hiding a sidebar entry while leaving its route open reads as protection that is not there, which is strictly worse than an honest open list.
 
-Registration is self-service (`POST /register`) with no approval step, so anyone who can reach the app can still create an account. What that account *gets* is now the `Staff` role rather than the whole application, which is the point of the floor being least-privilege. An approval step remains the honest fix and is still an open item.
+There is **no self-registration**. `POST /register` created a working account on the spot with no approval and no check that the employee ID was real; accounts are created by an administrator on the Users screen, which is where the role is chosen deliberately per account. `Staff` is still the least-privilege floor, it is simply no longer what a stranger assigns themselves. See `documentation/modules/auth.md`.
 
 ## Routes
 
@@ -212,8 +212,8 @@ Registration is self-service (`POST /register`) with no approval step, so anyone
 | Method | URI | Action |
 | --- | --- | --- |
 | GET | `/` | `LandingController@index` |
-| GET | `/login`, `/register`, `/forgot-password`, `/reset-password/{token}` | `Auth\*` |
-| POST | `/login`, `/register`, `/forgot-password`, `/reset-password` | `Auth\*` |
+| GET | `/login`, `/forgot-password`, `/reset-password/{token}` | `Auth\*` — there is no `/register` |
+| POST | `/login`, `/forgot-password`, `/reset-password` | `Auth\*` |
 | GET | `/sections/by-division/{division}` | `SectionController@byDivision` (JSON) |
 | GET | `/s/{token}`, `/s/{token}/file` | `ShareLinkController` — the token is the credential |
 | POST | `/s/{token}/identify` | `ShareLinkController@identify` — who the visitor says they are, or "stay anonymous" |
@@ -330,11 +330,11 @@ See `documentation/modules/realtime.md`.
 
 ## Known open items
 
-- **Self-service registration with no approval step** (above). A new account lands on `Staff` rather than on the whole application, but nothing stops it being created.
+- ~~Self-service registration with no approval step.~~ **Closed by removal.** `/register` is gone — controller, page and both routes. Accounts are created by an administrator on the Users screen, which is also where the role is chosen. See `documentation/modules/auth.md`.
 - **Per-user permission overrides have no screen yet.** `spatie`'s `model_has_permissions` works and is covered by a test, so a direct grant can be made from a console; the users module has no UI for it.
 - ~~There is no users-and-roles assignment screen.~~ **Done.** A role is created and edited at `/roles` and assigned on the user form; `UserController` refuses the two changes that would lock the application out of its own access model — changing your own role, and removing the last SUPERADMIN.
-- A person cannot be added to an **existing** folder from the UI: tags are made when a folder is created or a document is uploaded. The service still takes any grantee, so this is one screen's reach rather than a limit of the model.
-- **File versioning is deliberately not built.** `documentation/modules/files.md` records what the current shape already supports and the two things that would have to change, so the next phase starts from facts rather than from a re-reading of the code.
+- A person cannot be added to an existing **folder** from the UI: folder tags are made when the folder is created. A tracked **document**'s recipient list *is* editable, on the edit form that made it. The service takes any grantee either way, so this is one screen's reach rather than a limit of the model.
+- ~~File versioning is deliberately not built.~~ **Done.** The `files` row is the current version and superseded ones move to `file_versions`; see `documentation/modules/files.md` → Versioning.
 - There is no generic audit table (the PROCMIS `audits` / `owen-it/laravel-auditing` layer). Document circulation is covered by `document_logs`; edits to divisions, sections and accounts are not recorded anywhere.
 - The schema was consolidated into a set of authoritative `create` migrations; the earlier incremental history, including four empty no-ops, was replaced. A deployment carrying data must dump and restore rather than migrate across. Everything added **since** that baseline is an ordinary forward migration (`2026_11_1*`, `2026_11_12_*`, `2026_11_13_*`), so an installation already on the baseline migrates normally.
 - `App\Support\Modules::ALWAYS_VISIBLE` still carries `scan` and `track`, and its comment still says those routes are public. They are behind `auth` now, so the entries are harmless — every viewer of the sidebar is signed in — but the comment is wrong and the list is wider than it needs to be.

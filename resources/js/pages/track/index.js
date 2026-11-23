@@ -58,20 +58,7 @@ export default defineComponent({
         const previewable = computed(() => Boolean(props.result?.preview)
             && props.result.preview.mode !== 'none');
 
-        /*
-         * The refusal panel takes the level's own colour — orange for
-         * private, red for confidential — matching the VisibilityBadge at the
-         * top of the same card. It was a fixed amber, so a confidential
-         * document was stated in warning tones beside a red badge on the one
-         * page that exists to state its classification. Only a restricted
-         * document reaches this panel, and an unknown value takes the most
-         * restrictive tint for the same reason the badge does.
-         */
-        const restrictedTint = computed(() => (props.result?.visibility === 'private'
-            ? { panel: 'border-orange-200 bg-orange-50', ink: 'text-orange-900' }
-            : { panel: 'border-red-200 bg-red-50', ink: 'text-red-900' }));
-
-        return { enlarged, isAuthenticated, previewable, restrictedTint };
+        return { enlarged, isAuthenticated, previewable };
     },
     template: `
     <Head :title="result && result.open ? result.title : 'Track a document'" />
@@ -95,7 +82,13 @@ export default defineComponent({
                         <p class="text-xs font-bold uppercase tracking-[.18em] text-[#07559e]">Tracked document</p>
                         <p class="mt-1 break-all font-mono text-lg font-bold text-slate-900">{{ result.code }}</p>
                     </div>
-                    <VisibilityBadge :visibility="result.visibility" />
+                    <!-- Only beside a document somebody can actually read.
+                         On a refusal the classification is not the reader's
+                         answer: they cannot open it, and naming the level
+                         invites them to argue with it — or, where a public
+                         document's link is restricted, states a level that
+                         flatly contradicts the refusal beneath it. -->
+                    <VisibilityBadge v-if="result.open" :visibility="result.visibility" />
                 </div>
 
                 <!-- Public: the document, described and shown. -->
@@ -151,24 +144,34 @@ export default defineComponent({
                     </p>
                 </template>
 
-                <!-- Restricted: the level, and nothing that describes the document. -->
-                <template v-else>
-                    <div class="mt-6 rounded-xl border px-4 py-4" :class="restrictedTint.panel">
-                        <p class="text-sm font-bold uppercase tracking-wide" :class="restrictedTint.ink">
-                            <i class="fa-solid fa-lock mr-1.5" aria-hidden="true"></i>You cannot access this document
-                        </p>
-                        <!-- The level, from the row rather than written out.
-                             This said "private" literally, so a confidential
-                             document was described as private on the one page
-                             that exists to state its classification — the
-                             badge beside it said otherwise, and the two
-                             disagreed. -->
-                        <p class="mt-2 text-sm" :class="restrictedTint.ink">This document is {{ (result.visibility_label || 'restricted').toLowerCase() }}, and you do not have access rights to open it.</p>
-                    </div>
+                <!--
+                    Refused: the code, and nothing else about the document.
 
-                    <p class="mt-5 text-sm text-slate-600">
-                        If you need to see this document, sign in with your staff account or ask the person who filed it to give you access.
-                    </p>
+                    The level is deliberately not stated here any more, and
+                    the panel no longer takes its colour. It used to read
+                    "This document is private, and you do not have access
+                    rights to open it" — which tells the reader nothing they
+                    can act on, invites them to argue with a classification
+                    rather than ask the person who filed it, and goes
+                    plainly wrong where a *public* document's link has been
+                    set to Restricted: it then announced the document was
+                    public directly above a refusal to open it.
+
+                    What the reader needs is on screen instead: that they
+                    cannot open it, and the two real doors — sign in, or ask.
+                -->
+                <template v-else>
+                    <!-- One sentence, and it is about what to do next.
+                         Saying it twice — once in the panel and again in a
+                         paragraph under it — made a refusal feel like a
+                         telling-off, which is the wrong register for a
+                         courier holding a folder. -->
+                    <div class="mt-6 rounded-xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <p class="text-sm font-bold uppercase tracking-wide text-slate-800">
+                            <i class="fa-solid fa-lock mr-1.5 text-slate-500" aria-hidden="true"></i>You do not have access to this document
+                        </p>
+                        <p class="mt-2 text-sm text-slate-600">Sign in with your staff account, or ask the person who filed it to share it with you.</p>
+                    </div>
 
                     <div class="mt-6 flex flex-wrap gap-3 border-t border-slate-200 pt-6">
                         <Link v-if="!isAuthenticated" href="/login" class="inline-flex items-center justify-center gap-2 rounded-lg bg-[#00aeef] px-4 py-2.5 text-sm font-bold text-white transition hover:bg-[#009bd8]">
