@@ -103,7 +103,11 @@ Widening it to view or download makes the URL a bearer credential **whatever the
 
 > **This replaced a rule read off the document's level.** `ShareLinkController::opensForHolder()` used to ask whether the *document* was restricted; it asks the *link's term* now. The migration `2026_11_21_000002_restrict_links_already_in_circulation` moves every live link on a restricted document onto `restricted`, because leaving them as they were would silently turn URLs already sent — and labels already printed — into bearer credentials, and a link's reach is only ever narrowed after it has been sent.
 
+> **The reader redirect runs after the term, not before it.** `show()` sends a signed-in reader who may open the document to `documents.view` rather than to a card about it, and that check asks the resolver with *no link* — right for choosing a page, wrong for deciding whether the URL opens. Asked first it was the latter: on a public document every account passes it, so a link marked Restricted redirected anybody holding an account straight to the document it was closed to, while a guest on the same URL was refused correctly. `opensForHolder()` answers first now.
+
 > **Restricted is a document's term.** A file or folder has no named-reader rule for the link to defer to — its rule is its visibility and its shares, which a link is already the sanctioned way around — so `SharingService::assertLinkable()` refuses it there rather than inventing one.
+
+> **Linkability is one rule, asked by both session-less doors.** `AccessResolver::linkableNow()` is public because a share link is not the only URL that answers to nobody — the Office viewer's signed URL is fetched by Microsoft from their own servers. `SharingService::createLink()`, `ensureLinkFor()`, `ShareController` and `FilePreview::mayLeaveForViewer()` all asked it as `effectiveVisibility($item)->linkable()`, which is that rule with the tracked-document clause missing: a tracked file's own visibility is whatever its folder gave it, so a **confidential document** reached through My Files minted links and had viewer URLs minted for it. See CLAUDE.md → "A preview is a server decision".
 
 > **The link's own state still decides first.** A revoked, expired, spent or reclassified link resolves to nothing whatever its term, so "the link no longer works" means one thing rather than two.
 

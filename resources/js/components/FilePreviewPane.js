@@ -40,11 +40,13 @@ export default defineComponent({
          * one, and by the browser itself when there is not — which only a PDF
          * can do.
          *
-         * `viewer_url` is null in two situations and the difference matters to
-         * the person looking: the item may not be sent out (confidential), or
-         * nothing outside this network can fetch from this installation at
-         * all, which is the normal state on a laptop serving localhost. The
-         * server says which through `viewer_unreachable`.
+         * `viewer_url` is null in three situations and the difference
+         * matters to the person looking: the item may not be sent out
+         * (confidential), this reader may not take a copy and a viewer URL
+         * is one, or nothing outside this network can fetch from this
+         * installation at all, which is the normal state on a laptop serving
+         * localhost. The server says which through `viewer_unreachable` and
+         * `viewer_needs_download`; it never leaves the page to guess.
          */
         const frameSrc = computed(() => props.file?.viewer_url ?? props.file?.src ?? null);
 
@@ -60,8 +62,16 @@ export default defineComponent({
 
         const thirdParty = computed(() => Boolean(props.file?.viewer_url));
         const unreachable = computed(() => Boolean(props.file?.viewer_unreachable));
+        /*
+         * The format is renderable and this reader may not have it rendered,
+         * because the only renderer for it is somebody else's and sending it
+         * there is a copy leaving the server. A third sentence rather than
+         * reusing "this format cannot be shown", which is false — it can be,
+         * for somebody holding a copy.
+         */
+        const needsDownload = computed(() => Boolean(props.file?.viewer_needs_download));
 
-        return { clientRenderer, framed, frameSrc, mode, thirdParty, unreachable };
+        return { clientRenderer, framed, frameSrc, mode, needsDownload, thirdParty, unreachable };
     },
     template: `
     <div class="flex min-h-0 flex-1 flex-col">
@@ -131,6 +141,10 @@ export default defineComponent({
                 <template v-if="unreachable">
                     <h2 class="text-lg font-bold uppercase tracking-wide text-slate-900">Preview unavailable here</h2>
                     <p class="mt-2 max-w-md text-sm text-slate-600">This format is rendered by Microsoft's Office viewer, which fetches the file from this server — and this installation is not reachable from the internet, so it has nothing to fetch. Download it to read it, or set a public <span class="font-mono text-xs">APP_URL</span> on a deployed server.</p>
+                </template>
+                <template v-else-if="needsDownload">
+                    <h2 class="text-lg font-bold uppercase tracking-wide text-slate-900">Preview not available on this access</h2>
+                    <p class="mt-2 max-w-md text-sm text-slate-600">This format can only be rendered by Microsoft's Office viewer, which reads the file from this server — so previewing it means sending a copy out. That is not permitted here, where no copy of this file may leave the server.</p>
                 </template>
                 <template v-else>
                     <h2 class="text-lg font-bold uppercase tracking-wide text-slate-900">No in-browser preview</h2>

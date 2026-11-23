@@ -5,6 +5,7 @@ import Button from '../../components/Button';
 import Card from '../../components/Card';
 import ConfirmActionModal from '../../components/ConfirmActionModal';
 import ToggleSwitch from '../../components/ToggleSwitch';
+import useTabbedErrors from '../../composables/useTabbedErrors';
 import useUrlTab from '../../composables/useUrlTab';
 
 /**
@@ -129,6 +130,28 @@ export default defineComponent({
         const panel = useUrlTab('tab', ['types', 'limits', 'archives'], 'types');
         const groups = props.catalogue.map((entry) => entry.group);
         const group = useUrlTab('category', groups, groups[0] ?? 'documents');
+
+        /*
+         * A refusal lands on the panel that caused it.
+         *
+         * One form across three panels means the server can reject a field
+         * the person is not looking at — an archive limit while they are on
+         * Types — and the page would scroll to the top with no sentence
+         * anywhere on screen saying why. Declared rather than read off the
+         * DOM, in panel order, so "the first error" means the first one
+         * somebody reading the tab row would reach.
+         */
+        useTabbedErrors(form, panel, {
+            types: ['allowed_types'],
+            limits: ['min_size_kb', 'max_size_kb', 'max_files_per_upload'],
+            archives: [
+                'max_archive_size_kb',
+                'max_archive_entries',
+                'max_extracted_kb',
+                'max_archive_depth',
+                'allow_nested_archives',
+            ],
+        });
 
         const permitted = computed(() => Object.entries(types).filter(([, type]) => type.enabled));
 

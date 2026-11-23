@@ -101,7 +101,7 @@ class ShareController extends Controller
                 ])->values(),
             // A confidential item can never be linked, so the panel must not
             // offer a control that would be refused.
-            'linkable' => $this->access->effectiveVisibility($item)->linkable(),
+            'linkable' => $this->access->linkableNow($item),
             'abilities' => array_map(fn (ShareAbility $ability) => [
                 'value' => $ability->value,
                 'label' => $ability->label(),
@@ -146,7 +146,7 @@ class ShareController extends Controller
         // A confidential item cannot be linked. SharingService throws, and this
         // turns that into the flash the shell already knows how to show rather
         // than a 500.
-        if (! $this->access->effectiveVisibility($item)->linkable()) {
+        if (! $this->access->linkableNow($item)) {
             return back()->with('error', 'A confidential item cannot be shared through a link.');
         }
 
@@ -193,7 +193,7 @@ class ShareController extends Controller
         // Re-checked, not assumed from when the link was minted: an item can
         // be reclassified afterwards, and widening a link on something that
         // is now confidential must not be the way back in.
-        if ($link->shareable && ! $this->access->effectiveVisibility($link->shareable)->linkable()) {
+        if ($link->shareable && ! $this->access->linkableNow($link->shareable)) {
             return back()->with('error', 'A confidential item cannot be shared through a link.');
         }
 

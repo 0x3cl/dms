@@ -581,6 +581,117 @@ class FilePreviewTest extends TestCase
     }
 
     /**
+     * A confidential **document** never reaches the viewer either, and that
+     * is a different question from a confidential file.
+     *
+     * The tests above classify the `files` row. A tracked document does not:
+     * its row keeps whatever visibility the folder it was uploaded into gave
+     * it — `private`, for anything in personal storage — while the
+     * classification that governs those bytes is the **document's**. So
+     * `mayLeaveForViewer()` asking `effectiveVisibility($file)` read
+     * `private` and minted a URL, and a confidential deck's bytes were
+     * fetchable, with no session, by Microsoft and by anybody holding the
+     * signed URL. It asks `AccessResolver::linkableNow()` now, which is the
+     * same rule a share link answers to and the one place the
+     * tracked-document clause is stated.
+     *
+     * Asserted at the route as well as at the descriptor, because the mint
+     * and the fetch are two separate decisions and the fetch is the one that
+     * serves bytes.
+     */
+    public function test_a_confidential_documents_deck_never_reaches_the_viewer(): void
+    {
+        $uploader = User::factory()->create();
+        $document = $this->document($uploader, 'confidential');
+
+        // The upload form takes a PDF; the bytes under the document are
+        // replaced with a deck, because PowerPoint is the format that has no
+        // in-browser renderer and therefore the only one that could leave.
+        $file = $document->file;
+        $file->update([
+            'original_name' => 'deck.pptx',
+            'name' => 'deck.pptx',
+            'extension' => 'pptx',
+            'mime_type' => 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        ]);
+        $file->refresh();
+
+        $this->assertSame(
+            FileVisibility::Private,
+            $file->visibility,
+            'The premise: the files row is private, so a check on it alone says "linkable".',
+        );
+        $this->assertFalse(
+            app(FilePreview::class)->mayLeaveForViewer($file),
+            "A confidential document's bytes may never be handed to an outside viewer.",
+        );
+
+        $descriptor = $this->describe($uploader, $file);
+        $this->assertNull($descriptor['viewer_url']);
+        $this->assertSame('none', $descriptor['mode']);
+
+        // And the route refuses a signature issued for it, which is what
+        // Microsoft would be fetching.
+        auth()->logout();
+        $this->get(URL::temporarySignedRoute('files.viewer', now()->addMinutes(5), [
+            'owner' => $uploader->public_id,
+            'file' => $file->public_id,
+        ]))->assertNotFound();
+    }
+
+    /**
+     * A viewer URL is a copy leaving the server, so it needs `download`.
+     *
+     * The contradiction this closes: the share page told a view-only holder
+     * `can_download: false` and "no copy leaves the server", and carried in
+     * its own markup a signed URL that returns the whole file to anybody who
+     * fetches it, with no session. The gate was `view`, which is the ability
+     * that matches *looking at* bytes we serve — not the one that matches
+     * handing them out.
+     *
+     * Both ends asserted, because a narrowing that also breaks the ordinary
+     * case is not a fix: a link that does permit a copy keeps its preview.
+     */
+    public function test_a_view_only_link_gets_no_viewer_url_for_a_deck(): void
+    {
+        config(['app.url' => 'https://doctrack.example.gov.ph']);
+
+        $uploader = User::factory()->create();
+        $document = $this->document($uploader, 'private');
+        $file = $document->file;
+        $file->update([
+            'original_name' => 'deck.pptx',
+            'name' => 'deck.pptx',
+            'extension' => 'pptx',
+            'mime_type' => 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        ]);
+        $file->refresh();
+
+        // A private document is minted a restricted link with the upload, so
+        // this widens that one rather than adding a second — there is only
+        // ever one live link per item.
+        $link = app(SharingService::class)->activeLinkFor($document);
+        app(SharingService::class)->updateLink($link, ShareAbility::View, $uploader);
+
+        $viewOnly = app(FilePreview::class)->describe($file, null, $link->refresh());
+        $this->assertFalse($viewOnly['can_download']);
+        $this->assertNull(
+            $viewOnly['viewer_url'],
+            'A link that permits no copy must not carry a URL that returns one.',
+        );
+        $this->assertTrue(
+            $viewOnly['viewer_needs_download'],
+            'And the page has to be able to say which of the three reasons applies.',
+        );
+
+        app(SharingService::class)->updateLink($link->refresh(), ShareAbility::Download, $uploader);
+
+        $widened = app(FilePreview::class)->describe($file, null, $link->refresh());
+        $this->assertNotNull($widened['viewer_url'], 'A link that permits a copy keeps its preview.');
+        $this->assertFalse($widened['viewer_needs_download']);
+    }
+
+    /**
      * @param  list<int>  $recipients
      */
     private function document(User $uploader, string $visibility, array $recipients = []): \App\Models\Document

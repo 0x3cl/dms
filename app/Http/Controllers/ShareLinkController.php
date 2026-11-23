@@ -57,27 +57,6 @@ class ShareLinkController extends Controller
         $grant = $this->access->grant($request->user(), $item, $link);
 
         /*
-         * A signed-in reader who may open the document is sent to the
-         * document, not to a card about it.
-         *
-         * The label is one link whatever the level, so the person scanning it
-         * is as often a member of staff as a courier. For them the share page
-         * is a worse version of the page they are entitled to: no trail, no
-         * comments, no version history, and a Download button where the
-         * document itself would be. The token did its job by naming which
-         * document to open.
-         *
-         * A guest is untouched by this — there is no page behind
-         * `documents.view` for them, which is why that route forwards one to
-         * the public lookup.
-         */
-        if ($item instanceof Document
-            && $request->user() !== null
-            && $this->access->allows($request->user(), $item, FileAbility::View)) {
-            return redirect()->route('documents.view', ['code' => $item->code]);
-        }
-
-        /*
          * A link on the restricted term is not a key to its document.
          *
          * Answered with the same page a tracking code gets — it exists, here
@@ -109,6 +88,38 @@ class ShareLinkController extends Controller
         }
 
         abort_if($grant->isDenied(), 404);
+
+        /*
+         * A signed-in reader who may open the document is sent to the
+         * document, not to a card about it.
+         *
+         * The label is one link whatever the level, so the person scanning it
+         * is as often a member of staff as a courier. For them the share page
+         * is a worse version of the page they are entitled to: no trail, no
+         * comments, no version history, and a Download button where the
+         * document itself would be. The token did its job by naming which
+         * document to open.
+         *
+         * A guest is untouched by this — there is no page behind
+         * `documents.view` for them, which is why that route forwards one to
+         * the public lookup.
+         *
+         * **It runs after the term has been honoured, and that order is the
+         * whole of it.** It asks what the person may do with *no link*,
+         * because a bearer link is redeemed by a stranger and a stranger has
+         * no document page to be sent to — so this cannot be the question
+         * that decides whether the URL opens. Asked first, it was: on a
+         * public document every signed-in person passes it, so a link marked
+         * Restricted redirected them straight to the document it was closed
+         * to, and the term meant nothing for anybody holding an account. The
+         * gate above now answers first, and this only decides *which page* a
+         * reader who is already through it should be looking at.
+         */
+        if ($item instanceof Document
+            && $request->user() !== null
+            && $this->access->allows($request->user(), $item, FileAbility::View)) {
+            return redirect()->route('documents.view', ['code' => $item->code]);
+        }
 
         // A document's link opens the document, and its bytes are the file
         // underneath. Resolved here so the page below has one shape to render.

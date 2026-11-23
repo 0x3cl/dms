@@ -91,12 +91,29 @@ class DirectoryTest extends TestCase
         $this->assertModelExists($division);
     }
 
+    /**
+     * The JSON narrowing endpoint, and the account it now needs.
+     *
+     * It used to sit outside the `auth` group, which was right while there
+     * was a registration form — a guest choosing their own office had to be
+     * able to narrow the list. That form was removed and this stayed: a
+     * public endpoint anybody could walk division by division to map the
+     * office's structure, behind no grant and called by nothing, since the
+     * forms that narrow a section picker do it client-side from props they
+     * already hold. Both halves are asserted, because a gate added without
+     * checking who still needs to pass it is an outage.
+     */
     public function test_sections_can_be_listed_for_a_division_as_json(): void
     {
         $division = Division::factory()->create();
         Section::factory()->for($division)->create(['name' => 'Records Section']);
 
-        $this->get("/sections/by-division/{$division->id}")
+        $this->get("/sections/by-division/{$division->id}")->assertRedirect('/login');
+
+        // `sections.read` — which Staff holds, so the picker still works for
+        // an ordinary account.
+        $this->actingAs(User::factory()->create())
+            ->get("/sections/by-division/{$division->id}")
             ->assertOk()
             ->assertJsonCount(1)
             ->assertJsonFragment(['name' => 'Records Section']);

@@ -125,9 +125,6 @@ Route::get('/track', [PublicTrackingController::class, 'show'])
  */
 Route::get('/scan', [DocumentController::class, 'scan'])->name('scan.qr');
 
-// Sections of a division, as JSON, for narrowing a section picker.
-Route::get('/sections/by-division/{division}', [SectionController::class, 'byDivision'])->name('sections.byDivision');
-
 // Authenticated
 Route::middleware(['auth'])->group(function () {
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
@@ -155,6 +152,21 @@ Route::middleware(['auth'])->group(function () {
     });
     Route::middleware('permission:divisions.delete')
         ->delete('divisions/{division}', [DivisionController::class, 'destroy'])->name('divisions.destroy');
+
+    /*
+     * Sections of a division, as JSON, for narrowing a section picker.
+     *
+     * It sat **outside** this group, which was right while there was a
+     * registration form: a guest choosing their own office had to be able to
+     * narrow the list. That form is gone, and the route stayed — a public
+     * endpoint anyone could walk division by division to map the office's
+     * structure, gating nothing and called by nothing, since the forms that
+     * narrow a section picker do it client-side from props they already
+     * hold. Declared before `sections/{section}` so `by-division` is not
+     * captured as a section id.
+     */
+    Route::middleware('permission:sections.read')
+        ->get('sections/by-division/{division}', [SectionController::class, 'byDivision'])->name('sections.byDivision');
 
     // Sections. `sections/create` is declared before `sections/{section}` so
     // the literal segment is not captured as a section id.

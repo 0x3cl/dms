@@ -7,6 +7,7 @@ import Card from '../../components/Card';
 import ConfirmActionModal from '../../components/ConfirmActionModal';
 import SearchableSelect from '../../components/SearchableSelect';
 import useConfirmSubmit from '../../composables/useConfirmSubmit';
+import useTabbedErrors from '../../composables/useTabbedErrors';
 import useUrlTab from '../../composables/useUrlTab';
 
 /**
@@ -94,6 +95,28 @@ export default defineComponent({
             : form.post('/users', { ...options, forceFormData: true }));
 
         const { confirm, request, cancel, proceed } = useConfirmSubmit(submit);
+
+        /*
+         * A refusal lands on the tab that caused it.
+         *
+         * This matters on **create**, where one request carries both tabs: a
+         * rejected password while the person is reading Personal Information
+         * refuses the form with the reason behind a tab they have no cause to
+         * click, and from their side the page simply declined to save. On an
+         * existing account each tab posts separately, so the error is already
+         * where they are — the map is harmless there and still right if the
+         * two forms are ever merged.
+         *
+         * In tab order, because "the first error" should mean the first one
+         * somebody reading the tabs left to right would reach.
+         */
+        useTabbedErrors(form, tab, {
+            personal: [
+                'first_name', 'last_name', 'employee_id', 'email',
+                'division_id', 'section_id', 'role', 'profile_image', 'avatar_seed',
+            ],
+            security: ['password', 'password_confirmation'],
+        });
 
         // Only on an existing account: a password set here replaces whatever
         // was there, and the administrator doing it does not know the old one.

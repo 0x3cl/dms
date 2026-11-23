@@ -198,8 +198,20 @@ class FilePreview
          * No viewer URL when the page can draw it itself. Minting one anyway
          * would hand a third party a credential for bytes that are never going
          * to be sent to them.
+         *
+         * **And none at all unless the asker may take a copy.** A viewer URL
+         * is signed, answers to no session and returns the whole file, so it
+         * *is* a copy leaving the server — handed to Microsoft, and sitting
+         * in the page source for whoever the page was rendered for. Gating
+         * it on `view` was the mistake: a **view-only share link** reported
+         * `can_download: false`, said "no copy leaves the server" on the
+         * screen, and carried a fetchable URL to the bytes in its own markup;
+         * a session holding a view-only share on a `.pptx` did the same. The
+         * narrowing documented for this URL — minted only for somebody the
+         * resolver has already cleared — has to be the ability that matches
+         * what it does.
          */
-        $viewerUrl = $mode === 'document' && $clientRenderer === null
+        $viewerUrl = $mode === 'document' && $clientRenderer === null && $mayDownload
             ? $this->viewerUrl($file, $bytes)
             : null;
 
@@ -268,6 +280,20 @@ class FilePreview
             // A PDF is the one document format a browser can render by itself,
             // so it is the one that still has something to show without a
             // viewer.
+            /*
+             * The third reason a document has no frame: it *could* be
+             * rendered, but only by sending a copy out, and this reader may
+             * not take one. Distinguished from the other two because the
+             * honest sentences differ — "this format cannot be shown" is
+             * false here, and "nothing outside can reach this server" sends
+             * somebody to their firewall over a permission.
+             */
+            'viewer_needs_download' => $mode === 'document'
+                && $viewerUrl === null
+                && $clientRenderer === null
+                && ! $this->rendersLocally($bytes)
+                && ! $mayDownload
+                && $this->mayLeaveForViewer($file, $bytes),
             'renders_locally' => $this->rendersLocally($bytes),
             'download_url' => $mayDownload ? $stream.($query === '' ? '' : '?'.ltrim($query, '&')) : null,
             'can_download' => $mayDownload,
@@ -360,7 +386,24 @@ class FilePreview
             return false;
         }
 
-        return $this->access->effectiveVisibility($file)->linkable();
+        /*
+         * `AccessResolver::linkableNow()`, not `effectiveVisibility()`.
+         *
+         * They are the same answer for an untracked file and a different one
+         * for a tracked document's bytes, which is the whole bug this
+         * replaced: a tracked file's own `visibility` is whatever its folder
+         * gave it — private, for anything in personal storage — while the
+         * classification that governs it is the **document's**. So a
+         * confidential document stored as a `.pptx` or a legacy `.doc`
+         * answered `private`, a viewer URL was minted, and the one level
+         * that exists to say "these bytes never leave on a session-less URL"
+         * handed them to Microsoft.
+         *
+         * The resolver already stated that rule for share links, which are
+         * the other session-less door. Asking it here is what stops the two
+         * being two rules.
+         */
+        return $this->access->linkableNow($file);
     }
 
     /**

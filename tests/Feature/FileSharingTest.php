@@ -502,6 +502,44 @@ class FileSharingTest extends TestCase
     }
 
     /**
+     * A confidential **document's file** cannot be linked either, and that is
+     * a different question from a confidential file.
+     *
+     * The test above classifies the `files` row. A tracked document does
+     * not: its row keeps the visibility its folder gave it — `private`, for
+     * anything in personal storage — while the classification governing
+     * those bytes is the document's. `createLink()` asked the file for its
+     * own visibility, so a confidential document reached through **My Files**
+     * rather than the register minted a link happily.
+     *
+     * Nothing leaked, because redemption asks `AccessResolver`, which had
+     * the tracked-document clause and refused — so what the office got was a
+     * link that 404'd for everybody it was sent to, which is precisely the
+     * failure this refusal exists to raise at the point of asking. One rule
+     * now answers both: `AccessResolver::linkableNow()`.
+     */
+    public function test_a_confidential_documents_file_cannot_be_linked(): void
+    {
+        $owner = User::factory()->create();
+        $file = $this->fileIn($this->folders->rootFor($owner), $owner);
+        \App\Models\Document::factory()->create([
+            'user_id' => $owner->id,
+            'file_id' => $file->id,
+            'file_name' => $file->original_name,
+            'visibility' => \App\Enums\DocumentVisibility::Confidential,
+        ]);
+
+        $this->assertSame(
+            FileVisibility::Private,
+            $file->fresh()->visibility,
+            'The premise: the files row is private, so a check on it alone says "linkable".',
+        );
+
+        $this->expectException(\RuntimeException::class);
+        $this->sharing->createLink($file->fresh(), ShareAbility::View, $owner);
+    }
+
+    /**
      * The check runs again on redemption, because an item can be reclassified
      * as confidential *after* a link has been handed out. The link has to stop
      * working at that moment, not when somebody remembers to revoke it.

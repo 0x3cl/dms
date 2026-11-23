@@ -150,14 +150,21 @@ class SharingService
          * chain. Both end at the same question — may this be reached by a URL
          * whoever holds it can open — and a confidential subject never may.
          *
+         * `AccessResolver::linkableNow()` is that question, and asking it
+         * here rather than restating it is what fixes a third case the
+         * restatement missed: a **tracked file**. The ternary below asked a
+         * `File` for its own visibility, which for anything in personal
+         * storage is `private` — so a confidential document's bytes, reached
+         * from My Files rather than from the register, minted a link
+         * happily. Nothing leaked, because redemption asks the resolver and
+         * the resolver was right; what the office got was a link that 404'd
+         * for everyone it was sent to, which is the failure this method
+         * exists to raise early.
+         *
          * The check is repeated on every redemption in AccessResolver, because
          * a subject can be reclassified after a link has been handed out.
          */
-        $linkable = $item instanceof Document
-            ? $item->visibility->linkable()
-            : $this->access->effectiveVisibility($item)->linkable();
-
-        if (! $linkable) {
+        if (! $this->access->linkableNow($item)) {
             throw new RuntimeException('A confidential item cannot be shared through a link.');
         }
 
@@ -230,11 +237,7 @@ class SharingService
          * its one shape. Every document that may have a link gets one, and
          * what the link does when it is redeemed is the thing that varies.
          */
-        $linkable = $item instanceof Document
-            ? $item->visibility->linkable()
-            : $this->access->effectiveVisibility($item)->linkable();
-
-        if (! $linkable) {
+        if (! $this->access->linkableNow($item)) {
             return null;
         }
 

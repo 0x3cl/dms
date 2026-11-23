@@ -194,8 +194,19 @@ class AccessResolver
      * A file carrying a tracking code is answered by its **document's**
      * classification, not its own — the same rule as everywhere else: the
      * obfuscated file URL is not a looser second door to a tracked document.
+     *
+     * **Public, because a link is not the only session-less door.** The
+     * Office viewer is the other one: Microsoft fetches a signed URL from
+     * their own servers, so those bytes are as reachable without a session as
+     * a share link's are, and the question "may this leave on a URL that
+     * answers to nobody" is the same question. `FilePreview` asked it with
+     * its own `effectiveVisibility($file)->linkable()`, which is this rule
+     * with the tracked-document clause missing — so a **confidential**
+     * document stored as a `.pptx` or a legacy `.doc` had a viewer URL
+     * minted for it, because the `files` row underneath was merely private.
+     * One statement, asked by both.
      */
-    private function linkableNow(File|Folder|Document $subject): bool
+    public function linkableNow(File|Folder|Document $subject): bool
     {
         if ($subject instanceof Document) {
             return $subject->visibility->linkable();

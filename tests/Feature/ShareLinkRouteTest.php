@@ -368,6 +368,88 @@ class ShareLinkRouteTest extends TestCase
     }
 
     /**
+     * A **signed-in** stranger is refused by the term too.
+     *
+     * The regression, and it was invisible in every test above because they
+     * all probed the link signed out. `show()` sends a reader who may open
+     * the document to the document rather than to a card about it, and that
+     * check asked the resolver with *no link* — which on a public document
+     * every account passes. Asked before the term, it was therefore the
+     * question that decided whether the URL opened: a link marked Restricted
+     * redirected anybody holding an account straight to the document it was
+     * closed to, while a guest on the same URL was correctly refused.
+     *
+     * Both halves are asserted, because the fix is an ordering and the way
+     * to get an ordering wrong is to fix one end of it. A tagged reader must
+     * still land on the document.
+     */
+    public function test_a_restricted_link_on_a_public_document_refuses_a_signed_in_stranger(): void
+    {
+        $owner = User::factory()->create();
+        $tagged = User::factory()->create();
+        $stranger = User::factory()->create();
+        $file = app(FileStorage::class)->store(
+            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
+            app(FolderService::class)->rootFor($owner),
+            $owner,
+        );
+        $document = Document::factory()->create([
+            'user_id' => $owner->id,
+            'file_id' => $file->id,
+            'file_name' => $file->original_name,
+            'visibility' => DocumentVisibility::Public,
+        ]);
+        $document->allRecipients()->syncWithoutDetaching([$tagged->id => ['notified_at' => now()]]);
+
+        $link = app(SharingService::class)->createLink($document, ShareAbility::Restricted, $owner);
+
+        // The stranger holds an account and the document is public, so the
+        // old check passed them. The term says otherwise.
+        $this->actingAs($stranger)->get("/s/{$link->token}")
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('track/index', false)
+                ->where('result.open', false));
+        $this->actingAs($stranger)->get("/s/{$link->token}/file")->assertNotFound();
+
+        // And the people the link is addressed to still get the document.
+        $this->actingAs($tagged)->get("/s/{$link->token}")
+            ->assertRedirect(route('documents.view', ['code' => $document->code]));
+    }
+
+    /**
+     * A bearer link still opens for a stranger with an account.
+     *
+     * The other end of the same ordering: the redirect moved *after* the
+     * term's gate, and it must not have become the gate. A view link is
+     * redeemed by whoever holds the URL, signed in or not, and somebody with
+     * an account but no claim on the document belongs on the share card —
+     * there is no document page they are entitled to.
+     */
+    public function test_a_bearer_link_on_a_private_document_still_opens_for_a_signed_in_stranger(): void
+    {
+        $owner = User::factory()->create();
+        $stranger = User::factory()->create();
+        $file = app(FileStorage::class)->store(
+            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
+            app(FolderService::class)->rootFor($owner),
+            $owner,
+        );
+        $document = Document::factory()->create([
+            'user_id' => $owner->id,
+            'file_id' => $file->id,
+            'file_name' => $file->original_name,
+            'visibility' => DocumentVisibility::Private,
+        ]);
+
+        $link = app(SharingService::class)->createLink($document, ShareAbility::Download, $owner);
+
+        $this->actingAs($stranger)->get("/s/{$link->token}")
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('share/show', false));
+        $this->actingAs($stranger)->get("/s/{$link->token}/file")->assertOk();
+    }
+
+    /**
      * The document stays public; only the link is closed.
      *
      * A restricted link is a statement about one URL, never about the

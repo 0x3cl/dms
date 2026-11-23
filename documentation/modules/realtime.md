@@ -14,6 +14,7 @@ Notifications and both audit trails update without a reload, over **Laravel Reve
 | `resources/js/components/NotificationBell.js` | Listens on `users.{id}` |
 | `resources/js/components/AppNavbar.js` | The wordmark, coloured by `connection` |
 | `config/reverb.php`, `config/broadcasting.php`, `.env.example` | The server and the four `VITE_` values |
+| `deploy/supervisor/doctrack-reverb.conf`, `deploy/nginx/doctrack-reverb.conf` | Keeping the daemon alive, and routing the socket to it — see `deploy/README.md` |
 | `tests/Feature/BroadcastingTest.php` | That a row announces itself, and what the payload may contain |
 | `tests/Feature/ChannelAuthorizationTest.php` | A matrix of readers and levels, differential against `AccessResolver` |
 
