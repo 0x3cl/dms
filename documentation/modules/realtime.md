@@ -9,12 +9,21 @@ Notifications and both audit trails update without a reload, over **Laravel Reve
 | `routes/channels.php` | Who may listen — **the entire gate** |
 | `app/Events/DocumentTrailUpdated.php` | A document's trail changed: id + timestamp, nothing more |
 | `app/Events/ActivityTrailUpdated.php` | The file-and-folder trail changed |
-| `resources/js/echo.js` | The one connection, and `listen()` — a no-op unsubscribe when there is no socket |
+| `resources/js/echo.js` | The one connection, `listen()` — a no-op unsubscribe when there is no socket — and `connection`, the live state the header lamp reads |
 | `resources/js/composables/useLiveTrail.js` | What the client does with a signal |
 | `resources/js/components/NotificationBell.js` | Listens on `users.{id}` |
+| `resources/js/components/AppNavbar.js` | The wordmark, coloured by `connection` |
 | `config/reverb.php`, `config/broadcasting.php`, `.env.example` | The server and the four `VITE_` values |
 | `tests/Feature/BroadcastingTest.php` | That a row announces itself, and what the payload may contain |
 | `tests/Feature/ChannelAuthorizationTest.php` | A matrix of readers and levels, differential against `AccessResolver` |
+
+## The header says whether it is connected
+
+The **DocTrack** wordmark in `AppNavbar` is the lamp: green while the websocket is connected, red while it is not, and plain white on a deployment that has no `VITE_REVERB_APP_KEY` at all.
+
+Three states rather than two, and the third is the point. Realtime is optional by design — every page works from the Inertia props it already carries — so painting "not configured" red would call a deliberate choice a fault, on every page, forever. A dot sits beside the name because colour alone is not a signal everybody can read, and the tooltip and `aria-label` carry the sentence.
+
+`echo.js` exports `connection` for it: a ref holding `off`, `live` or `down`, seeded from Pusher's connection object and kept current by its `state_change` event. It is deliberately **not** `realtime()`, which answers "was an Echo built" — a question about configuration. The two part company exactly where it matters: a key compiled into the bundle with no `reverb:start` listening behind it is the ordinary failure, and a header that read the key would report the deployment's own configuration back as if it were a connection. Every access is wrapped, because this is decoration and a broadcaster that changes shape must not take the site header down with it.
 
 ## A trail broadcasts a signal, not the row
 

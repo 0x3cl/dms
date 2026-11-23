@@ -55,7 +55,7 @@
 | `resources/js/composables` | `useConfirmSubmit` (every form's confirm-then-submit gate), `useUrlTab` (tab state in the query string), `useLiveTrail` (what to do with a trail signal), `usePreviewDescriptor` (fetching how a file should be previewed), `useCloseOnTutorial`. |
 | `resources/js/utils` | `format-date.js` — `formatDay`/`formatTimestamp` for serialized Carbon values; `file-rows.js` — the shape both file listings render. |
 | `resources/js/avatar.js`, `initials.js` | The generated-avatar URL and the initials fallback: the style and framing live here, never in `users.avatar_seed`. |
-| `resources/js/echo.js` | The one Reverb connection, and `listen()` — which returns a no-op unsubscribe when there is no socket. |
+| `resources/js/echo.js` | The one Reverb connection, `listen()` — which returns a no-op unsubscribe when there is no socket — and `connection`, the `off`/`live`/`down` state the header wordmark is coloured by. |
 | `resources/js/organization.js` | The office's name, contact details and logo, used by the navbar and footer. One file instead of PROCMIS's editable Pages module. |
 | `resources/views/app.blade.php` | The only Blade file left: the Inertia root template, the icon links and the pre-paint theme script. |
 | `routes/web.php` | The public landing, the authenticated group, then the token-and-opaque-id routes that are public by construction. |

@@ -610,7 +610,9 @@ The events are dispatched from `DocumentLog::record()` and `ActivityLog::record(
 
 See `documentation/modules/realtime.md`.
 
-The whole thing fails soft. `resources/js/echo.js` builds no connection without `VITE_REVERB_APP_KEY` and `listen()` hands back a no-op unsubscribe, so every page still works from its Inertia props on a deployment with no websocket. `REVERB_APP_SECRET` must never gain a `VITE_` twin — anything prefixed that way is compiled into the bundle.
+The whole thing fails soft. `resources/js/echo.js` builds no connection without `VITE_REVERB_APP_KEY` and `listen()` hands back a no-op unsubscribe, so every page still works from its Inertia props on a deployment with no websocket.
+
+**Whether it is connected is on screen**, as the colour of the DocTrack wordmark in `AppNavbar`: green when the socket is up, red when it is not, white where no key is configured. That third state is why `echo.js` exports `connection` rather than the page reading `realtime()` — the latter answers "was an Echo built", which is a question about configuration, and the ordinary failure is a key in the bundle with no `reverb:start` behind it. Reporting configuration as if it were a connection is the one thing a status lamp must not do; so is painting an optional feature's absence as a fault, which is why "not configured" is neither colour. `REVERB_APP_SECRET` must never gain a `VITE_` twin — anything prefixed that way is compiled into the bundle.
 
 ### Access is asked for, not negotiated out of band
 

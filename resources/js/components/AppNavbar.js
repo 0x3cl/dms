@@ -1,6 +1,7 @@
 import { Link, usePage } from '@inertiajs/vue3';
 import { computed, defineComponent, onBeforeUnmount, onMounted, ref } from 'vue';
 import { organization } from '../organization';
+import { connection } from '../echo';
 
 /**
  * The site header, rendered outside the Inertia page so it persists across
@@ -34,7 +35,31 @@ export default defineComponent({
         });
         onBeforeUnmount(() => navbarResizeObserver?.disconnect());
 
-        return { isAuthenticated, navbarEl, org: organization };
+        /*
+         * The wordmark doubles as the realtime lamp: green while the
+         * websocket is connected, red while it is not.
+         *
+         * It reads the *connection*, never the configured key — a page that
+         * said "live" because a key was compiled into the bundle would be
+         * reporting its own configuration back to the reader, and the
+         * ordinary failure is precisely a key with no `reverb:start`
+         * listening behind it.
+         *
+         * A deployment with no key at all is left white. Realtime is
+         * optional by design — every page works from its Inertia props
+         * without it — so painting that red would be calling a deliberate
+         * choice a fault, on every page, forever.
+         */
+        const live = computed(() => connection.value === 'live');
+        const realtimeOff = computed(() => connection.value === 'off');
+
+        const connectionLabel = computed(() => ({
+            live: 'Live updates are connected.',
+            down: 'Live updates are not connected — pages still work, they just do not refresh on their own.',
+            off: 'Live updates are not configured on this deployment.',
+        })[connection.value]);
+
+        return { connectionLabel, isAuthenticated, live, navbarEl, org: organization, realtimeOff };
     },
     template: `
     <header ref="navbarEl" class="border-t-7 border-slate-800 bg-linear-to-r from-[#0d5ba6] via-[#07559e] to-[#043d78] py-4 text-white print:hidden" :class="isAuthenticated ? 'sticky top-0 z-30' : 'relative z-20 shadow-lg'">
@@ -49,7 +74,24 @@ export default defineComponent({
             </Link>
             <div class="border-t border-white/20 pt-4 text-center md:border-t-0 md:border-l md:pl-8 md:pt-0 md:text-right">
                 <p class="text-xs font-medium tracking-[0.18em] text-sky-200 uppercase">{{ org.label }}</p>
-                <p class="mt-1 text-lg font-semibold tracking-tight sm:text-xl">{{ org.title }}</p>
+                <!--
+                    The product name, coloured by the websocket's state, with
+                    a dot beside it: colour alone is not a signal somebody
+                    colour-blind can read, so the tooltip carries the
+                    sentence and aria-label says it rather than leaving a
+                    screen reader with a bare name whose meaning is in a CSS
+                    class.
+                -->
+                <p class="mt-1 flex items-center justify-center gap-2 text-lg font-semibold tracking-tight sm:text-xl md:justify-end"
+                    :title="connectionLabel"
+                    :class="realtimeOff ? 'text-white' : (live ? 'text-emerald-300' : 'text-rose-300')">
+                    <span>{{ org.title }}</span>
+                    <span v-if="!realtimeOff"
+                        class="inline-block h-2 w-2 shrink-0 rounded-full"
+                        :class="live ? 'bg-emerald-400' : 'bg-rose-400'"
+                        role="img"
+                        :aria-label="connectionLabel"></span>
+                </p>
             </div>
         </nav>
     </header>
