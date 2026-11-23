@@ -531,7 +531,16 @@ export default defineComponent({
                                 <div class="flex items-center gap-3">
                                     <UserAvatar :name="document.uploader_name" :image="document.user?.profile_image" :seed="document.user?.avatar_seed" />
                                     <div class="min-w-0">
-                                        <span class="block truncate text-sm font-semibold text-slate-800">{{ document.uploader_name || '—' }}</span>
+                                        <!-- The name is the row's own snapshot, so a
+                                             document filed by a closed account keeps
+                                             saying who filed it; the `(You)` beside it
+                                             is matched on the live account's id, which
+                                             is the only thing that means the same in
+                                             both. -->
+                                        <PersonName
+                                            :id="document.user?.id"
+                                            :name="document.uploader_name"
+                                            class="block text-sm font-semibold text-slate-800" />
                                         <span class="mt-0.5 block whitespace-nowrap text-xs text-slate-500">{{ formatTimestamp(document.created_at) }}</span>
                                     </div>
                                 </div>
