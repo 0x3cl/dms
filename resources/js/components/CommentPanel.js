@@ -1,6 +1,7 @@
 import { computed, defineComponent, nextTick, onMounted, ref, watch } from 'vue';
 import UserAvatar from './UserAvatar';
 import { formatTimestamp } from '../utils/format-date';
+import PersonName from './PersonName';
 
 /**
  * How many comments are drawn on first paint, and how many more each time
@@ -45,7 +46,7 @@ const PAGE = 20;
  */
 export default defineComponent({
     name: 'CommentPanel',
-    components: { UserAvatar },
+    components: { PersonName, UserAvatar },
     emits: ['update:modelValue', 'post', 'remove'],
     props: {
         /** The comments for the version on screen, newest-first. */
@@ -199,7 +200,7 @@ export default defineComponent({
                         <div
                             class="flex items-baseline"
                             :class="comment.author_id && comment.author_id === viewerId ? 'justify-end' : ''">
-                            <span class="truncate text-xs font-bold text-slate-700">{{ comment.author }}</span>
+                            <PersonName :id="comment.author_id" :name="comment.author" class="text-xs font-bold text-slate-700" />
                         </div>
 
                         <div

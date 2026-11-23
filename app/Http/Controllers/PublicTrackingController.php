@@ -154,6 +154,15 @@ class PublicTrackingController extends Controller
 
         return [
             ...$result,
+            /*
+             * Restored, because the summary withholds it and this is no
+             * longer a refusal. `restrictedSummary()` drops the code
+             * wherever the code is itself the door — which is a *public*
+             * document being refused by its link's restricted term. Here the
+             * same document is being described to somebody the level admits,
+             * so the code is the heading over the thing they are reading.
+             */
+            'code' => $document->code,
             'title' => $document->title,
             'type' => $document->documentType?->name ?? $document->type,
             'uploader' => $document->uploaderName(),

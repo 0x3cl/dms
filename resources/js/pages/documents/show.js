@@ -17,6 +17,7 @@ import TrailFilters from '../../components/TrailFilters';
 import TrailVersionTabs from '../../components/TrailVersionTabs';
 import { formatTimestamp } from '../../utils/format-date';
 import { registerHref } from '../../registerReturn';
+import PersonName from '../../components/PersonName';
 
 /**
  * A document and its travel history — what a scanned QR Tracker label opens.
@@ -44,7 +45,7 @@ import { registerHref } from '../../registerReturn';
  */
 export default defineComponent({
     name: 'DocumentShow',
-    components: { AdminShell, Badge, Card, CommentPanel, ConfirmActionModal, FilePreviewModal, FilePreviewPane, Head, Link, Pagination, TrailFilters, TrailVersionTabs, UserAvatar, VersionList, VisibilityBadge },
+    components: { AdminShell, Badge, Card, CommentPanel, ConfirmActionModal, FilePreviewModal, FilePreviewPane, Head, Link, Pagination, PersonName, TrailFilters, TrailVersionTabs, UserAvatar, VersionList, VisibilityBadge },
     props: {
         document: { type: Object, required: true },
         /** A paginator now, not a bare array: the trail is 12 rows a page. */
@@ -1128,7 +1129,9 @@ export default defineComponent({
                 <dl class="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
                     <div>
                         <dt class="text-xs font-bold uppercase tracking-wide text-slate-500">Uploaded by</dt>
-                        <dd class="mt-1 font-semibold text-slate-800">{{ document.user?.name ?? document.uploader_name ?? '—' }}</dd>
+                        <dd class="mt-1 font-semibold text-slate-800">
+                            <PersonName :id="document.user?.id" :name="document.user?.name ?? document.uploader_name" />
+                        </dd>
                     </div>
                     <div>
                         <dt class="text-xs font-bold uppercase tracking-wide text-slate-500">Uploaded</dt>
@@ -1561,7 +1564,7 @@ export default defineComponent({
                                 </span>
                                 <span class="min-w-0 flex-1">
                                     <span class="block text-sm font-bold text-slate-800">{{ log.action_label }}</span>
-                                    <span class="block text-xs text-slate-500">{{ log.actor_name }}</span>
+                                    <PersonName :id="log.actor_id" :name="log.actor_name" class="block text-xs text-slate-500" />
                                     <span class="block text-xs text-slate-400">
                                         {{ formatTimestamp(log.occurred_at ?? log.created_at) }}
                                         <!-- Which bytes the entry was about.
@@ -1640,7 +1643,7 @@ export default defineComponent({
                         :person="{ name: inspecting.actor_name, profile_image: inspecting.actor_profile_image, avatar_seed: inspecting.actor_avatar_seed }"
                         class="!h-14 !w-14 !text-sm" />
                     <span class="min-w-0">
-                        <span class="block truncate font-bold text-slate-800">{{ inspecting.actor_name }}</span>
+                        <PersonName :id="inspecting.actor_id" :name="inspecting.actor_name" class="block font-bold text-slate-800" />
                         <span v-if="inspecting.actor_employee_id" class="block truncate text-sm text-slate-600">{{ inspecting.actor_employee_id }}</span>
                     </span>
                 </div>

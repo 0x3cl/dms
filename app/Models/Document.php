@@ -337,10 +337,10 @@ class Document extends Model
     /**
      * What may be said about this document to somebody who may not read it.
      *
-     * The classification and the code, and deliberately nothing else — no
-     * title, no type, no uploader, no file. Being told "this is private" is
-     * not a disclosure; being told what the private thing is *about* would
-     * be.
+     * The classification and — sometimes — the code, and deliberately nothing
+     * else: no title, no type, no uploader, no file. Being told "this is
+     * private" is not a disclosure; being told what the private thing is
+     * *about* would be.
      *
      * It lives here rather than in either controller because two of them
      * answer this question now: the public tracking page, for a visitor
@@ -348,12 +348,32 @@ class Document extends Model
      * to a document whose level does not open for them. Two copies of a
      * disclosure boundary is how one of them quietly grows a field.
      *
+     * **The code is withheld unless the level restricts to named people,
+     * because otherwise the code is the door.** That reads like an
+     * over-correction and is the opposite: this summary is only ever built
+     * for somebody being refused, and the refusal a *public* document can
+     * carry is its link's restricted term. Printing the tracking code on
+     * that page hands the reader a lookup that opens the document in full —
+     * so the one control that says "only the people on this document" was
+     * refusing with the key in its hand. Where the level does restrict, the
+     * code discloses nothing a refusal does not already admit and is the
+     * thing the reader has to quote to ask for access.
+     *
+     * `grantable` is the same fact said the other way, for the page: is
+     * there anything here an uploader could grant? On a public document
+     * there is not — a recipient row adds nothing to a document everyone may
+     * already read — so a page offering "Request access" there would be
+     * offering a request the endpoint refuses by design.
+     *
      * @return array<string, mixed>
      */
     public function restrictedSummary(): array
     {
+        $grantable = $this->visibility->restrictedToNamedPeople();
+
         return [
-            'code' => $this->code,
+            'code' => $grantable ? $this->code : null,
+            'grantable' => $grantable,
             'visibility' => $this->visibility->value,
             'visibility_label' => $this->visibility->label(),
             'visibility_description' => $this->visibility->description(),

@@ -80,7 +80,12 @@ export default defineComponent({
                 <div class="flex flex-wrap items-start justify-between gap-4">
                     <div class="min-w-0">
                         <p class="text-xs font-bold uppercase tracking-[.18em] text-[#07559e]">Tracked document</p>
-                        <p class="mt-1 break-all font-mono text-lg font-bold text-slate-900">{{ result.code }}</p>
+                        <!-- The server withholds the code on a refusal where
+                             the code is itself the door — a public document
+                             closed by its link's restricted term. There is
+                             nothing to print and nothing to quote, so the
+                             heading stands alone rather than over a blank. -->
+                        <p v-if="result.code" class="mt-1 break-all font-mono text-lg font-bold text-slate-900">{{ result.code }}</p>
                     </div>
                     <!-- Only beside a document somebody can actually read.
                          On a refusal the classification is not the reader's
@@ -170,14 +175,43 @@ export default defineComponent({
                         <p class="text-sm font-bold uppercase tracking-wide text-slate-800">
                             <i class="fa-solid fa-lock mr-1.5 text-slate-500" aria-hidden="true"></i>You do not have access to this document
                         </p>
-                        <p class="mt-2 text-sm text-slate-600">Sign in with your staff account, or ask the person who filed it to share it with you.</p>
+                        <!--
+                            Two refusals, because there are two things the
+                            reader can usefully do and they are not the same.
+
+                            Where the document is restricted to named people,
+                            somebody can be added to that list — so the answer
+                            is to ask, and the next screen is where the asking
+                            happens. Where it is not, the refusal is the
+                            *link's* own term: there is no list to be added to
+                            and nothing an uploader could grant, so the only
+                            real answer is whoever sent the link. Offering
+                            "Request access" there sent a request the endpoint
+                            refuses by design.
+                        -->
+                        <p v-if="result.grantable" class="mt-2 text-sm text-slate-600">Sign in with your staff account, or ask the person who filed it to share it with you.</p>
+                        <p v-else class="mt-2 text-sm text-slate-600">The person who shared this link limited it to specific people. Ask them to send you one you can open.</p>
                     </div>
 
                     <div class="mt-6 flex flex-wrap gap-3 border-t border-slate-200 pt-6">
                         <Link v-if="!isAuthenticated" href="/login" class="inline-flex items-center justify-center gap-2 rounded-lg bg-[#00aeef] px-4 py-2.5 text-sm font-bold text-white transition hover:bg-[#009bd8]">
                             <i class="fa-solid fa-right-to-bracket" aria-hidden="true"></i>Staff sign in
                         </Link>
-                        <Link v-else :href="'/documents/view/' + result.code" class="inline-flex items-center justify-center gap-2 rounded-lg bg-[#00aeef] px-4 py-2.5 text-sm font-bold text-white transition hover:bg-[#009bd8]">
+                        <!--
+                            Only where there is a grant to ask for.
+
+                            This used to be unconditional, and it was the
+                            refusal's own back door: a plain navigation to the
+                            register's lookup, labelled as though it sent a
+                            request. On a restricted document that page *is*
+                            the asking — it refuses and carries the form. On a
+                            public one closed by its link's term, the level
+                            admits every account, so the same navigation
+                            opened the document in full. The button said
+                            "Request access" and delivered the document
+                            without one.
+                        -->
+                        <Link v-else-if="result.grantable" :href="'/documents/view/' + result.code" class="inline-flex items-center justify-center gap-2 rounded-lg bg-[#00aeef] px-4 py-2.5 text-sm font-bold text-white transition hover:bg-[#009bd8]">
                             <i class="fa-solid fa-hand" aria-hidden="true"></i>Request access
                         </Link>
                         <Link href="/track" class="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-50">

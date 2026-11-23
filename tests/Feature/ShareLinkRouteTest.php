@@ -417,6 +417,92 @@ class ShareLinkRouteTest extends TestCase
     }
 
     /**
+     * The refusal must not carry the way in.
+     *
+     * The page offered a "Request access" button, which was not a request at
+     * all — a plain navigation to `/documents/view/{code}`. On a document
+     * restricted to named people that page *is* the asking: it refuses and
+     * carries the form. On a **public** document closed only by its link's
+     * term, the level admits every account, so the identical button opened
+     * the document in full. It said "Request access" and delivered the
+     * document without one.
+     *
+     * The code went with it, and that is the same leak rather than a second
+     * one: on a public document the tracking code *is* the door, so printing
+     * it on the refusal was handing over the key beside the lock.
+     * `restrictedSummary()` withholds it wherever the level does not
+     * restrict, and `grantable` tells the page whether there is anything an
+     * uploader could grant — on a public document there is not, since a
+     * recipient row adds nothing to what everyone may already read.
+     */
+    public function test_a_restricted_links_refusal_offers_no_way_into_a_public_document(): void
+    {
+        $owner = User::factory()->create();
+        $stranger = User::factory()->create();
+        $file = app(FileStorage::class)->store(
+            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
+            app(FolderService::class)->rootFor($owner),
+            $owner,
+        );
+        $document = Document::factory()->create([
+            'user_id' => $owner->id,
+            'file_id' => $file->id,
+            'file_name' => $file->original_name,
+            'visibility' => DocumentVisibility::Public,
+        ]);
+        $link = app(SharingService::class)->createLink($document, ShareAbility::Restricted, $owner);
+
+        $this->actingAs($stranger)->get("/s/{$link->token}")
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('track/index', false)
+                ->where('result.open', false)
+                // Nothing to ask for, so nothing is offered.
+                ->where('result.grantable', false)
+                // And the code is not disclosed, in the result or beside it.
+                ->where('result.code', null)
+                ->where('code', null))
+            ->assertDontSee($document->code);
+    }
+
+    /**
+     * Where the level *does* restrict, the refusal keeps both.
+     *
+     * The withholding above is about a code that opens the document by
+     * itself. A private document's code does not — it is what the reader has
+     * to quote to ask — so taking it away there would remove the one thing
+     * that makes the refusal actionable.
+     */
+    public function test_a_private_documents_refusal_still_carries_its_code_and_the_ask(): void
+    {
+        $owner = User::factory()->create();
+        $stranger = User::factory()->create();
+        $file = app(FileStorage::class)->store(
+            UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'),
+            app(FolderService::class)->rootFor($owner),
+            $owner,
+        );
+        $document = Document::factory()->create([
+            'user_id' => $owner->id,
+            'file_id' => $file->id,
+            'file_name' => $file->original_name,
+            'visibility' => DocumentVisibility::Private,
+        ]);
+        $link = app(SharingService::class)->createLink($document, ShareAbility::Restricted, $owner);
+
+        $this->actingAs($stranger)->get("/s/{$link->token}")
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('track/index', false)
+                ->where('result.open', false)
+                ->where('result.grantable', true)
+                ->where('result.code', $document->code));
+
+        // And the page that button leads to is the ask, not the document.
+        $this->actingAs($stranger)->get("/documents/view/{$document->code}")
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('documents/restricted', false));
+    }
+
+    /**
      * A bearer link still opens for a stranger with an account.
      *
      * The other end of the same ordering: the redirect moved *after* the

@@ -13,6 +13,7 @@ import RowActions from '../../components/RowActions';
 import { pushToast } from '../../components/ToastStack';
 import { formatTimestamp } from '../../utils/format-date';
 import { rememberRegister } from '../../registerReturn';
+import PersonName from '../../components/PersonName';
 
 /**
  * The Documents page — one screen for what used to be two sidebar entries.
@@ -36,7 +37,7 @@ import { rememberRegister } from '../../registerReturn';
  */
 export default defineComponent({
     name: 'DocumentsIndex',
-    components: { AdminShell, Card, ConfirmActionModal, DocumentFilterModal, Head, IndexControls, Link, Pagination, RowActions, TrackDocumentCard, UserAvatar, VisibilityBadge },
+    components: { AdminShell, Card, ConfirmActionModal, DocumentFilterModal, Head, IndexControls, Link, Pagination, PersonName, RowActions, TrackDocumentCard, UserAvatar, VisibilityBadge },
     props: {
         documents: { type: Object, required: true },
         types: { type: Array, default: () => [] },
@@ -649,7 +650,9 @@ export default defineComponent({
                     </div>
                     <div>
                         <dt class="text-xs font-bold uppercase tracking-wide text-slate-500">Uploaded by</dt>
-                        <dd class="mt-1 text-sm font-semibold text-slate-800">{{ inspecting.user?.name ?? inspecting.uploader_name ?? '—' }}</dd>
+                        <dd class="mt-1 text-sm font-semibold text-slate-800">
+                            <PersonName :id="inspecting.user?.id" :name="inspecting.user?.name ?? inspecting.uploader_name" />
+                        </dd>
                     </div>
                     <div>
                         <dt class="text-xs font-bold uppercase tracking-wide text-slate-500">Origin</dt>

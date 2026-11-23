@@ -78,12 +78,21 @@ class ShareLinkController extends Controller
             // link that should not exist and answers like every other refusal.
             abort_unless($item instanceof Document, 404);
 
+            /*
+             * The summary decides what may be said, including whether the
+             * tracking code may be — so the page-level `code` is read back
+             * out of it rather than taken from the document again. Sending
+             * `$item->code` here was the leak restated: the refusal withheld
+             * the code from the card and shipped it in the props beside it.
+             */
+            $summary = $item->restrictedSummary();
+
             return Inertia::render('track/index', [
-                'code' => $item->code,
+                'code' => $summary['code'],
                 'method' => 'code',
                 'notFound' => false,
                 'malformed' => false,
-                'result' => $item->restrictedSummary(),
+                'result' => $summary,
             ]);
         }
 

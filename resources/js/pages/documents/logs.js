@@ -9,6 +9,7 @@ import UserAvatar from '../../components/UserAvatar';
 import TrailFilters from '../../components/TrailFilters';
 import TrailVersionTabs from '../../components/TrailVersionTabs';
 import { formatTimestamp } from '../../utils/format-date';
+import PersonName from '../../components/PersonName';
 
 /**
  * A document's full travel history. The route used to return raw JSON that
@@ -23,7 +24,7 @@ import { formatTimestamp } from '../../utils/format-date';
  */
 export default defineComponent({
     name: 'DocumentLogs',
-    components: { AdminShell, Card, ConfirmActionModal, Head, Link, Pagination, RowActions, TrailFilters, TrailVersionTabs, UserAvatar },
+    components: { AdminShell, Card, ConfirmActionModal, Head, Link, Pagination, PersonName, RowActions, TrailFilters, TrailVersionTabs, UserAvatar },
     props: {
         document: { type: Object, required: true },
         logs: { type: Object, required: true },
@@ -192,7 +193,7 @@ export default defineComponent({
                                     <UserAvatar
                                         :person="{ name: log.actor_name, profile_image: log.actor_profile_image, avatar_seed: log.actor_avatar_seed }"
                                         class="!h-8 !w-8 !text-[10px]" />
-                                    <span class="truncate">{{ log.actor_name }}</span>
+                                    <PersonName :id="log.actor_id" :name="log.actor_name" />
                                 </span>
                             </td>
                             <td class="px-4 py-4">
@@ -242,7 +243,7 @@ export default defineComponent({
                         :person="{ name: inspecting.actor_name, profile_image: inspecting.actor_profile_image, avatar_seed: inspecting.actor_avatar_seed }"
                         class="!h-14 !w-14 !text-sm" />
                     <span class="min-w-0">
-                        <span class="block truncate font-bold text-slate-800">{{ inspecting.actor_name }}</span>
+                        <PersonName :id="inspecting.actor_id" :name="inspecting.actor_name" class="block font-bold text-slate-800" />
                         <span v-if="inspecting.actor_employee_id" class="block truncate text-sm text-slate-600">{{ inspecting.actor_employee_id }}</span>
                     </span>
                 </div>
