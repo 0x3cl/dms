@@ -533,10 +533,10 @@ export default defineComponent({
                                     <div class="min-w-0">
                                         <!-- The name is the row's own snapshot, so a
                                              document filed by a closed account keeps
-                                             saying who filed it; the `(You)` beside it
-                                             is matched on the live account's id, which
-                                             is the only thing that means the same in
-                                             both. -->
+                                             saying who filed it; the "you" marker
+                                             beside it is matched on the live
+                                             account's id, which is the only thing
+                                             that means the same in both. -->
                                         <PersonName
                                             :id="document.user?.id"
                                             :name="document.uploader_name"
