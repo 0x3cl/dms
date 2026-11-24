@@ -1,4 +1,4 @@
-import { Head, Link, useForm } from '@inertiajs/vue3';
+import { Head, Link, router, useForm } from '@inertiajs/vue3';
 import { computed, defineComponent, ref, watch } from 'vue';
 import AdminShell from '../../components/AdminShell';
 import Button from '../../components/Button';
@@ -11,6 +11,9 @@ import ToggleSwitch from '../../components/ToggleSwitch';
 import UploadLimitsHint from '../../components/UploadLimitsHint';
 import useConfirmSubmit from '../../composables/useConfirmSubmit';
 import { registerHref } from '../../registerReturn';
+import { csrfHeaders } from '../../csrf';
+import { canCarryMark, stampable } from '../../stamp';
+import { pushToast } from '../../components/ToastStack';
 
 /**
  * Upload and edit in one component.
@@ -99,6 +102,35 @@ export default defineComponent({
              * something a toggle should do, so the panel stays readable.
              */
             comments_enabled: props.document?.comments_enabled ?? true,
+            /*
+             * Whether to draw the code into the file's own bytes.
+             *
+             * On by default: the office asked for every file to carry its
+             * code, and a default of off would make that a thing somebody
+             * has to remember on every upload. It is a choice rather than a
+             * rule because a stamp is irreversible — an image is re-encoded
+             * and a PDF gains a cover page — and there are documents nobody
+             * wants altered.
+             */
+            /*
+             * Whether this file carries its tracking code.
+             *
+             * **A state, not an action**, which is the correction: it opened
+             * *off* on a file that was already stamped, because it was read
+             * as "draw it now" and there was nothing to draw. Somebody
+             * looking at a stamped document therefore saw a switch saying
+             * the file was unmarked, directly above a note saying it was
+             * marked. It now shows what `files.stamp` holds, and the form
+             * only ever turns it into an action for bytes that do not carry
+             * a mark yet.
+             *
+             * A new upload defaults to on, because every file is meant to
+             * carry its code and a default of off would make that something
+             * to remember on every upload.
+             */
+            stamp: props.document
+                ? Boolean(props.document.carries_the_code)
+                : true,
         });
 
         /*
@@ -151,14 +183,339 @@ export default defineComponent({
             };
         });
 
+        /*
+         * Drawing the code into a PDF, after the document exists.
+         *
+         * An image is stamped on the server. A PDF cannot be — there is no
+         * PDF library on these servers — so the browser draws it and posts
+         * the result back, which is the second half of the same upload.
+         *
+         * The bytes are held in this closure and the code arrives on the
+         * success page Inertia hands to `onSuccess`, so the pair is only
+         * ever together here, in the moment between the two. The call is not
+         * awaited and the component is already unmounting: a plain async
+         * function keeps running, and nothing on screen depends on it.
+         *
+         * **A failure says so**, and that is a correction rather than an
+         * extra. It was silent, on the reasoning that a stamp is not worth
+         * an error message over a finished upload — which is true of the
+         * *upload*, and wrong about the person: they cannot tell a file that
+         * carries its code from one that does not by looking at it, so a
+         * silent failure means printing a document and discovering at the
+         * counter that there is nothing to scan. The toast names the step
+         * that failed, because "stamping failed" is not something anybody
+         * can act on.
+         */
+        const stampAfterUpload = async (file, documentId, code) => {
+            if (! file || ! code || ! documentId) return;
+
+            try {
+                const { stampable, stampPdf } = await import('../../stamp');
+
+                if (! stampable(file)) return;
+
+                /*
+                 * The *stamp* label, not the printable one.
+                 *
+                 * They encode different things on purpose: the printable
+                 * label points at the share link and can be reprinted when
+                 * that link is regenerated, while a stamp is in every copy
+                 * already handed out and so must never carry a token. See
+                 * `stamp_png` on this endpoint.
+                 */
+                const label = await fetch(`/documents/${documentId}/qr-label`, {
+                    headers: { Accept: 'application/json' },
+                    credentials: 'same-origin',
+                });
+
+                if (! label.ok) {
+                    pushToast({
+                        title: 'The code was not stamped onto the file',
+                        message: `${code} is filed, but its label could not be fetched. Open the document and use Download PNG to attach it by hand.`,
+                        tone: 'error',
+                    });
+
+                    return;
+                }
+
+                const { stamp_png: png, cover } = await label.json();
+
+                if (! png) return;
+
+                const stamped = await stampPdf(file, { labelPng: png, code, cover });
+
+                if (! stamped) {
+                    /*
+                     * `stampPdf` refuses an encrypted or signed PDF, and one
+                     * too large to rewrite in a tab. Each is a deliberate
+                     * refusal rather than a fault — rewriting a signed PDF
+                     * would invalidate its signature — so the message says
+                     * the document is filed and what to do instead.
+                     */
+                    pushToast({
+                        title: 'This PDF could not be stamped',
+                        message: `${code} is filed. A signed, encrypted or very large PDF is left untouched — open the document and use Download PNG to attach its label.`,
+                        tone: 'error',
+                    });
+
+                    return;
+                }
+
+                const body = new FormData();
+                body.append('code', code);
+                body.append('stamped', stamped, file.name);
+
+                const saved = await fetch('/files/stamp', {
+                    method: 'POST',
+                    body,
+                    headers: csrfHeaders(),
+                    credentials: 'same-origin',
+                });
+
+                if (! saved.ok) {
+                    pushToast({
+                        title: 'The stamped file could not be saved',
+                        message: `${code} is filed, but the stamped copy was refused (${saved.status}). Its bytes are unchanged.`,
+                        tone: 'error',
+                    });
+
+                    return;
+                }
+
+                pushToast({
+                    title: 'Tracking code stamped',
+                    message: `${code} is on every page of this document.`,
+                    tone: 'success',
+                });
+
+                /*
+                 * The screen was rendered before these bytes carried
+                 * anything, so it still says "not stamped" about a file
+                 * that now is — and the switch it says it under is the one
+                 * the person just used. The props are re-read rather than
+                 * patched, because what changed is the file's own row.
+                 *
+                 * Only on the edit form: the upload flow lands on a success
+                 * page that says nothing about the stamp, and reloading it
+                 * would be a visit nobody asked for.
+                 */
+                if (isEditing.value) {
+                    router.reload({ only: ['document'] });
+                }
+            } catch (error) {
+                // The document is filed either way; only the stamp is lost —
+                // and the person is told, because they cannot see which.
+                pushToast({
+                    title: 'The code was not stamped onto the file',
+                    message: `${code} is filed. ${error?.message ?? 'The stamp could not be drawn.'}`,
+                    tone: 'error',
+                });
+            }
+        };
+
+        /*
+         * Whether the file in hand can carry a mark, and what it would do.
+         *
+         * Asked of the file rather than of the document, because on the edit
+         * form the question is about the *replacement*: a spreadsheet
+         * replaced by a photograph can be stamped where the spreadsheet
+         * could not.
+         */
+        /*
+         * Two subjects, and which one is in play depends on the form.
+         *
+         * With a file chosen the question is about **that** file — a
+         * spreadsheet replaced by a photograph can be stamped where the
+         * spreadsheet could not. With none chosen, on the edit form, the
+         * question is about the file the document already holds, which is
+         * what lets a document filed before stamping existed be marked
+         * without re-uploading anything.
+         */
+        const markable = computed(() => (form.file
+            ? canCarryMark(form.file)
+            : Boolean(props.document?.can_stamp)));
+
+        /** Is the subject a PDF, which only the browser can draw into? */
+        const markIsPdf = computed(() => (form.file
+            ? stampable(form.file)
+            : Boolean(props.document?.needs_browser_stamp)));
+
+        /**
+         * Does the file already carry its code?
+         *
+         * Asked of the server's own answer rather than worked out from the
+         * stamp's value. The list here was `pdf` and `image`, the two
+         * formats stamping started with, so a Word, Excel or PowerPoint
+         * document that already carries a cover read as unstamped: the
+         * switch sat off above a note offering to add one, and saving did
+         * nothing because the server will not draw a second. `carries_the_code`
+         * is `DocumentStamp::carriesTheCode()`, which is where that
+         * question belongs and where a format added next is handled
+         * without this page being told.
+         */
+        const alreadyMarked = computed(() => ! form.file
+            && Boolean(props.document?.carries_the_code));
+
+        const markNote = computed(() => {
+            if (alreadyMarked.value) {
+                // What it carries, by what was actually drawn — a cover
+                // page, a sheet and a slide are three different things and
+                // "this image carries its code in the corner" was said of
+                // all of them.
+                return {
+                    image: 'This image carries its code in the corner. Replacing the file draws it again.',
+                    pdf: 'This file carries its code on a cover page. Replacing the file draws a new one.',
+                    docx: 'This document carries its code on a cover page. Replacing the file draws a new one.',
+                    xlsx: 'This workbook carries its code on a cover sheet. Replacing the file adds a new one.',
+                    pptx: 'This deck carries its code on a cover slide. Replacing the file adds a new one.',
+                }[props.document?.stamp] ?? 'This file carries its code. Replacing it draws a new one.';
+            }
+
+            const name = form.file?.name ?? '';
+
+            if (/\.(xlsx|xlsm)$/i.test(name)) {
+                return 'A cover sheet is added as the first tab, carrying the QR code, the tracking code, the title, the type and the classification.';
+            }
+
+            if (/\.(pptx|pptm|ppsx)$/i.test(name)) {
+                return 'A cover slide is added as the first slide, carrying the QR code, the tracking code, the title, the type and the classification.';
+            }
+
+            if (markIsPdf.value || /\.(docx|docm)$/i.test(name)) {
+                return 'A cover page is added as page one, carrying the QR code, the tracking code, the title, the type and the classification.';
+            }
+
+            return 'A small QR code is drawn into the bottom-right corner of the image.';
+        });
+
+        /*
+         * Choosing a replacement turns it back on.
+         *
+         * The switch shows the state of the file **in storage**, and a new
+         * file makes that stale: these are different bytes and they carry
+         * nothing yet. Without this, somebody replacing a stamped file saw
+         * the switch already on and never thought about it — which is
+         * correct — while somebody replacing an *unstamped* one saw it off
+         * and would have uploaded unmarked bytes without meaning to. New
+         * bytes default to being marked, exactly as on the upload form.
+         */
+        watch(() => form.file, (chosen, previous) => {
+            if (chosen && ! previous) {
+                form.stamp = true;
+            }
+        });
+
+        /**
+         * Fetch this document's own file, stamp it, and hand it back.
+         *
+         * The one path where the browser has to *get* the bytes rather than
+         * being handed them: a document filed before stamping existed has
+         * its file in storage and nothing in the form. It is the same three
+         * steps as an upload's second half, with a download in front.
+         */
+        const stampStoredFile = async ({ id, code, name }) => {
+            try {
+                const current = await fetch(`/documents/${id}/file/view`, {
+                    credentials: 'same-origin',
+                });
+
+                if (! current.ok) {
+                    pushToast({
+                        title: 'The code was not stamped onto the file',
+                        message: `${code} is unchanged — its file could not be read back (${current.status}).`,
+                        tone: 'error',
+                    });
+
+                    return;
+                }
+
+                const blob = await current.blob();
+                const file = new File([blob], name ?? 'document.pdf', {
+                    type: 'application/pdf',
+                });
+
+                await stampAfterUpload(file, id, code);
+            } catch (error) {
+                pushToast({
+                    title: 'The code was not stamped onto the file',
+                    message: `${code} is unchanged. ${error?.message ?? 'Its file could not be read back.'}`,
+                    tone: 'error',
+                });
+            }
+        };
+
         const submitForm = (options) => {
             if (isEditing.value) {
+                /*
+                 * An edit that carries a replacement file needs the same
+                 * second half as an upload.
+                 *
+                 * A replacement is a new version of the same document: the
+                 * tracking code is the one already printed on paper, so the
+                 * new bytes carry the *same* code — but they carry none of
+                 * the old version's mark, because that was drawn into the
+                 * bytes this just superseded. The server resets the row to
+                 * `none` and re-stamps an image itself; a PDF is the
+                 * browser's, here as on the way in.
+                 */
+                const replacement = form.file;
+                /*
+                 * Held before the post, for the reason the upload branch
+                 * holds its bytes: `onSuccess` runs against whatever props
+                 * the redirect brought back, and a stamp that depends on
+                 * reading them afterwards is a stamp that stops happening
+                 * the day one of them is renamed or arrives later.
+                 */
+                const subject = {
+                    id: props.document.id,
+                    code: props.document.code,
+                    name: props.document.file_name,
+                    browserDraws: Boolean(props.document.needs_browser_stamp),
+                };
+
                 // A file input needs multipart, and Laravel needs the method
                 // spoofed for it.
                 form.transform((data) => ({ ...data, _method: 'put' }))
-                    .post(`/documents/${props.document.id}`, { ...options, forceFormData: true });
+                    .post(`/documents/${props.document.id}`, {
+                        ...options,
+                        forceFormData: true,
+                        onSuccess: (page) => {
+                            options?.onSuccess?.(page);
+                            if (! form.stamp) return;
+
+                            if (replacement) {
+                                stampAfterUpload(replacement, subject.id, subject.code);
+                            } else if (subject.browserDraws) {
+                                /*
+                                 * No replacement: the bytes to draw on are
+                                 * the ones already in storage, so they are
+                                 * fetched back, stamped and returned. The
+                                 * server has just touched the file, which is
+                                 * what opens the window `files.stamp` checks.
+                                 */
+                                stampStoredFile(subject);
+                            }
+                        },
+                    });
             } else {
-                form.post('/documents', { ...options, forceFormData: true });
+                // Held before the post, because a successful one resets the
+                // form and the bytes are what the stamp needs.
+                const pending = form.file;
+                const wanted = form.stamp;
+
+                form.post('/documents', {
+                    ...options,
+                    forceFormData: true,
+                    onSuccess: (page) => {
+                        options?.onSuccess?.(page);
+                        // Declined, so the browser draws nothing either —
+                        // the server has already recorded that these bytes
+                        // carry no code.
+                        if (wanted) {
+                            stampAfterUpload(pending, page?.props?.documentId, page?.props?.code);
+                        }
+                    },
+                });
             }
         };
 
@@ -223,7 +580,7 @@ export default defineComponent({
 
         return {
             backHref: registerHref(), cancel, chooseFolder, choosingFolder, confirm, confirmMessage, folderLabel,
-            form, isEditing, proceed, request, selected, tagChanges, typeOptions,
+            alreadyMarked, form, isEditing, markable, markNote, proceed, request, selected, tagChanges, typeOptions,
         };
     },
     template: `
@@ -313,6 +670,27 @@ export default defineComponent({
                         <ToggleSwitch v-model="form.comments_enabled" label="Allow comments on this document" />
                     </div>
                     <p v-if="isEditing" class="mt-1 text-xs text-slate-500">Turning this off closes the thread. Nothing already written is deleted.</p>
+                </div>
+
+                <!--
+                    Offered only where the bytes can actually carry a mark.
+                    A spreadsheet, a video or a zip has no surface to draw
+                    on, so a tickbox over one would be a control that does
+                    nothing — canCarryMark() is the same test the server
+                    uses, asked of the file in hand.
+                -->
+                <div v-if="markable" class="md:col-span-2">
+                    <div class="flex flex-wrap items-start justify-between gap-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3.5">
+                        <div class="min-w-0">
+                            <p class="text-sm font-semibold text-slate-700">Stamp the tracking code into the file</p>
+                            <p class="mt-0.5 text-xs text-slate-500">{{ markNote }}</p>
+                        </div>
+                        <ToggleSwitch v-model="form.stamp" :disabled="alreadyMarked" label="Stamp the tracking code into the file" />
+                    </div>
+                    <p class="mt-1 text-xs text-slate-500">
+                        <template v-if="alreadyMarked">A stamp cannot be removed — the bytes were rewritten when it was drawn. Replace the file to change what it carries.</template>
+                        <template v-else>This changes the file itself and cannot be undone — an image is re-encoded, and a PDF gains a cover page. The code is on the document either way.</template>
+                    </p>
                 </div>
 
                 <label v-if="isEditing && form.file" class="md:col-span-2">

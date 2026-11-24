@@ -293,19 +293,22 @@ export default defineComponent({
 
         <!-- The methods as cards rather than a select: all three are visible,
              so nobody has to discover that uploading a label is possible. -->
-        <div class="mt-5 grid gap-3 sm:grid-cols-3">
+        <!-- More room between the three, and inside each: they are a choice
+             made once, read at a glance, and the old spacing packed three
+             two-line cards edge to edge. -->
+        <div class="mt-6 grid gap-5 sm:grid-cols-3">
             <button
                 v-for="option in methods"
                 :key="option.key"
                 type="button"
-                class="rounded-xl border px-4 py-3 text-left transition"
+                class="rounded-xl border px-5 py-4 text-left transition"
                 :class="method === option.key ? 'border-[#00aeef] bg-sky-50' : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'"
                 :aria-pressed="method === option.key"
                 @click="choose(option.key)">
                 <span class="flex items-center gap-2 text-sm font-bold" :class="method === option.key ? 'text-[#07559e]' : 'text-slate-700'">
                     <i :class="option.icon" aria-hidden="true"></i>{{ option.label }}
                 </span>
-                <span class="mt-1 block text-xs text-slate-500">{{ option.hint }}</span>
+                <span class="mt-1.5 block text-xs leading-relaxed text-slate-500">{{ option.hint }}</span>
             </button>
         </div>
 

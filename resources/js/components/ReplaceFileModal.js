@@ -2,6 +2,8 @@ import { computed, defineComponent, ref, watch } from 'vue';
 import { useForm } from '@inertiajs/vue3';
 import ConfirmActionModal from './ConfirmActionModal';
 import UploadLimitsHint from './UploadLimitsHint';
+import { csrfHeaders } from '../csrf';
+import { pushToast } from './ToastStack';
 
 /**
  * New bytes behind a file that already exists.
@@ -47,7 +49,85 @@ export default defineComponent({
 
         const nextVersion = computed(() => (props.item?.version ?? 1) + 1);
 
+        /*
+         * Draw the code into the new version, for the one format the server
+         * cannot draw into.
+         *
+         * A replacement is a new version of the **same** document: the
+         * tracking code is the one already printed on paper, so the new
+         * bytes carry the same code — and none of the old version's mark,
+         * because that was drawn into the bytes this just superseded. The
+         * server resets the row and re-stamps an image itself; a PDF has no
+         * PDF library here, so it is drawn in the browser exactly as it is
+         * on the way in.
+         *
+         * Silent only where there is nothing to say — a file with no
+         * tracking jacket, or a format that carries no mark. A real failure
+         * is reported, because a reader cannot tell a version that carries
+         * its code from one that does not by looking at it.
+         */
+        const stampReplacement = async (file) => {
+            const code = props.item?.tracked?.code;
+            const labelUrl = props.item?.tracked?.label_url;
+
+            if (!file || !code || !labelUrl) return;
+
+            try {
+                const { stampable, stampPdf } = await import('../stamp');
+
+                if (!stampable(file)) return;
+
+                const label = await fetch(labelUrl, {
+                    headers: { Accept: 'application/json' },
+                    credentials: 'same-origin',
+                });
+
+                if (!label.ok) return;
+
+                const { stamp_png: png, cover } = await label.json();
+
+                if (!png) return;
+
+                const stamped = await stampPdf(file, { labelPng: png, code, cover });
+
+                if (!stamped) {
+                    pushToast({
+                        title: 'This version could not be stamped',
+                        message: `${code} is saved as the new version. A signed, encrypted or very large PDF is left untouched.`,
+                        tone: 'error',
+                    });
+
+                    return;
+                }
+
+                const body = new FormData();
+                body.append('code', code);
+                body.append('stamped', stamped, file.name);
+
+                const saved = await fetch('/files/stamp', {
+                    method: 'POST',
+                    body,
+                    headers: csrfHeaders(),
+                    credentials: 'same-origin',
+                });
+
+                pushToast(saved.ok
+                    ? { title: 'Tracking code stamped', message: `${code} is on the new version.`, tone: 'success' }
+                    : { title: 'The stamped version could not be saved', message: `${code} is saved, but its stamp was refused (${saved.status}).`, tone: 'error' });
+            } catch (error) {
+                pushToast({
+                    title: 'This version could not be stamped',
+                    message: `${code} is saved. ${error?.message ?? 'The stamp could not be drawn.'}`,
+                    tone: 'error',
+                });
+            }
+        };
+
         const submit = () => {
+            // Held before the post, because the bytes are what the stamp
+            // needs and a successful post clears the form.
+            const replacement = form.file;
+
             form.transform((data) => ({ ...data, public_id: props.item?.public_id ?? '' }))
                 .post('/files/replace', {
                     forceFormData: true,
@@ -55,6 +135,7 @@ export default defineComponent({
                     onSuccess: () => {
                         emit('replaced');
                         emit('close');
+                        stampReplacement(replacement);
                     },
                 });
         };

@@ -301,7 +301,23 @@ class FileStorage
      */
     public function download(StoredBytes $bytes): StreamedResponse|BinaryFileResponse
     {
-        $name = VersionedFilename::stamp($bytes->downloadName(), $bytes->versionNumber());
+        /*
+         * The tracking code goes in front of the name, and for every format.
+         *
+         * A PDF carries its code on its pages and an image in its corner, but
+         * a video, an MP3, a zip, a spreadsheet and a plain text file have no
+         * surface to draw on. The filename is the surface they do have: it
+         * survives the download, a copy onto a USB stick and an email
+         * attachment, and it is what somebody types into the lookup when the
+         * file is all they are holding.
+         *
+         * Applied here rather than on the model for the same reason the
+         * version stamp is — see below.
+         */
+        $name = VersionedFilename::withCode(
+            VersionedFilename::stamp($bytes->downloadName(), $bytes->versionNumber()),
+            $bytes instanceof File ? $bytes->document?->code : null,
+        );
 
         return $this->disk()->download($bytes->storagePath(), $name, [
             'X-Content-Type-Options' => 'nosniff',
@@ -417,17 +433,28 @@ class FileStorage
     }
 
     /**
-     * Validators and a private cache window.
+     * Validators, and a cache the bytes can invalidate.
      *
-     * Ten minutes, which is the signed viewer URL's own lifetime: long enough
-     * that re-rendering a preview costs nothing, short enough that it cannot
-     * outlive the grant that produced it.
+     * It was `max-age=600`, on the reasoning that a preview re-rendered
+     * within ten minutes costs nothing — and `max-age` means *do not even
+     * ask*, so the validators below were never consulted inside that window.
+     * That is correct only while a URL's bytes cannot change under it, which
+     * `?version=` buys for a replacement and does not buy for a **stamp**: a
+     * stamp rewrites a file in place and keeps its version, deliberately,
+     * because a mark on the bytes is not a new version of them. So somebody
+     * who had just stamped a document was served their own cached copy of
+     * the file from before the mark, and the cover page was simply not
+     * there — which is indistinguishable from stamping having failed.
+     *
+     * `no-cache` keeps the copy and revalidates it: unchanged bytes answer
+     * 304 against the checksum, which is nearly as cheap as not asking, and
+     * changed bytes are fetched the moment they change.
      *
      * @return array<string, string>
      */
     private function cacheHeaders(StoredBytes $bytes): array
     {
-        $headers = ['Cache-Control' => 'private, max-age=600, must-revalidate'];
+        $headers = ['Cache-Control' => 'private, no-cache, must-revalidate'];
 
         if ($bytes->checksumValue()) {
             $headers['ETag'] = '"'.$bytes->checksumValue().'"';
@@ -456,8 +483,11 @@ class FileStorage
             'Content-Type' => 'image/webp',
             'X-Content-Type-Options' => 'nosniff',
             // Private: a thumbnail of a confidential file must not be cached by
-            // a proxy on the way to one viewer and handed to the next.
-            'Cache-Control' => 'private, max-age=600',
+            // a proxy on the way to one viewer and handed to the next. And
+            // revalidated rather than held, for the reason the bytes are: a
+            // stamp redraws this picture without changing its URL.
+            'Cache-Control' => 'private, no-cache, must-revalidate',
+            ...($bytes->checksumValue() ? ['ETag' => '"thumb-'.$bytes->checksumValue().'"'] : []),
         ]);
     }
 

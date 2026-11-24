@@ -99,7 +99,8 @@ export default defineComponent({
                         </Link>
                     </td>
                     <td class="px-4 py-4">
-                        <span v-if="mode === 'trash'" class="text-sm text-slate-600">{{ folder.restores_to }}</span>
+                        <Badge v-if="folder.partly_restored" tone="amber" title="This folder has been restored. What is listed inside it is still deleted.">Restored</Badge>
+                        <span v-else-if="mode === 'trash'" class="text-sm text-slate-600">{{ folder.restores_to }}</span>
                         <Badge v-else :tone="folder.visibility_tone">{{ folder.visibility_label }}</Badge>
                     </td>
                     <td class="px-4 py-4 text-slate-600">

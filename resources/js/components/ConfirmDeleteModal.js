@@ -1,6 +1,7 @@
 import { computed, defineComponent, ref, watch } from 'vue';
 import ConfirmActionModal from './ConfirmActionModal';
 import { readableSize } from '../utils/file-rows';
+import { csrfHeaders } from '../csrf';
 
 /**
  * Deleting — one component, two dialogs, because the two acts are not alike.
@@ -50,8 +51,6 @@ export default defineComponent({
         const loading = ref(false);
         const failed = ref('');
 
-        const csrf = () => document.querySelector('meta[name="csrf-token"]')?.content ?? '';
-
         /**
          * Ask the server what the delete would take, and — for a purge only —
          * for a confirmation code.
@@ -89,7 +88,10 @@ export default defineComponent({
                             headers: {
                                 Accept: 'application/json',
                                 'Content-Type': 'application/x-www-form-urlencoded',
-                                'X-CSRF-TOKEN': csrf(),
+                                // See resources/js/csrf.js — the cookie, not
+                                // the meta tag, which goes stale in a tab left
+                                // open across a session regeneration.
+                                ...csrfHeaders(),
                             },
                             credentials: 'same-origin',
                             body: new URLSearchParams({ purpose: props.purpose }),

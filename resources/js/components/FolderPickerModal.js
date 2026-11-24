@@ -1,6 +1,7 @@
 import { computed, defineComponent, ref, watch } from 'vue';
 import ConfirmActionModal from './ConfirmActionModal';
 import useCloseOnTutorial from '../composables/useCloseOnTutorial';
+import { csrfHeaders } from '../csrf';
 
 /**
  * Where should this go?
@@ -142,7 +143,7 @@ export default defineComponent({
         const createError = ref('');
         const saving = ref(false);
 
-        const csrf = () => document.querySelector('meta[name="csrf-token"]')?.content ?? '';
+
 
         const startCreating = () => {
             creating.value = true;
@@ -164,7 +165,11 @@ export default defineComponent({
                     headers: {
                         Accept: 'application/json',
                         'Content-Type': 'application/json',
-                        'X-CSRF-TOKEN': csrf(),
+                        // See resources/js/csrf.js: the meta tag is rendered
+                        // once per full page load and goes stale across a
+                        // session regeneration, which is the `CSRF token
+                        // mismatch` this dialog used to meet.
+                        ...csrfHeaders(),
                     },
                     credentials: 'same-origin',
                     body: JSON.stringify({

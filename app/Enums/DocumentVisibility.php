@@ -46,6 +46,27 @@ enum DocumentVisibility: string
     case Private = 'private';
     case Confidential = 'confidential';
 
+    /**
+     * The document level matching a file's own.
+     *
+     * The two enums share their *values* — `private`, `public`,
+     * `confidential` — which is what lets a file and a document badge
+     * identically, and is also the trap: a `match` on the case would be a
+     * third statement of a correspondence the values already make. So it is
+     * read `from()` the value, and a level either enum gains without the
+     * other is a hard failure here rather than a silent fall to public.
+     *
+     * Used when a file is filed automatically: the document takes the
+     * classification the bytes already had. Never the reverse — a document's
+     * level is a decision about readers, and writing it back onto the file
+     * row would make an automatic filing govern its own file, which is the
+     * one thing `File::governingDocument()` exists to prevent.
+     */
+    public static function forFile(FileVisibility $visibility): self
+    {
+        return self::from($visibility->value);
+    }
+
     public function label(): string
     {
         return match ($this) {

@@ -174,7 +174,8 @@ export default defineComponent({
             <div>
                 <p class="text-xs font-bold uppercase tracking-[.18em] text-[#07559e]">Storage</p>
                 <h2 class="mt-1 text-2xl font-bold uppercase tracking-wide text-slate-900">{{ folder ? folder.name : 'Trash' }}</h2>
-                <p v-if="folder" class="mt-1 text-slate-600">Inside a deleted folder. Everything here is still deleted — restoring the folder brings all of it back together.</p>
+                <p v-if="folder && folder.partly_restored" class="mt-1 text-slate-600">This folder has already been restored. What is still listed here is not — restore what you want back, and it returns into this folder.</p>
+                <p v-else-if="folder" class="mt-1 text-slate-600">Inside a deleted folder. Everything here is still deleted — restoring the folder brings all of it back together.</p>
                 <p v-else class="mt-1 text-slate-600">Everything you have deleted — files, folders and withdrawn documents. Open a folder to see what went with it, restore what you need, or delete it for good.</p>
             </div>
 

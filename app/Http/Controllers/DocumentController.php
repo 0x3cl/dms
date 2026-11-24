@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Enums\AccessRequestStatus;
 use App\Enums\ActivityAction;
 use App\Enums\DocumentAction;
+use App\Enums\DocumentStamp;
 use App\Enums\DocumentVisibility;
 use App\Enums\FileAbility;
 use App\Enums\ShareAbility;
@@ -20,6 +21,7 @@ use App\Models\User;
 use App\Notifications\PrivateDocumentShared;
 use App\Services\Access\AccessResolver;
 use App\Services\Documents\DocumentRegistrar;
+use App\Services\Documents\DocumentStampService;
 use App\Services\Documents\QrLabelService;
 use App\Services\Files\FileEventRecorder;
 use App\Services\Files\FileManager;
@@ -52,6 +54,7 @@ class DocumentController extends Controller
         private readonly FileStorage $files,
         private readonly FolderService $folders,
         private readonly AccessResolver $access,
+        private readonly DocumentStampService $stamps,
         private readonly UploadPolicy $policy,
         private readonly FilePreview $preview,
         private readonly FileEventRecorder $events,
@@ -476,6 +479,20 @@ class DocumentController extends Controller
         );
 
         /*
+         * The code into the bytes, where the format allows one.
+         *
+         * The register's own form stamps exactly as the My Files dialog does.
+         * It was the obvious omission: a document filed deliberately through
+         * this screen is the one most likely to be *printed*, and it was the
+         * one path that drew nothing into the file.
+         *
+         * Images are drawn here; a PDF is drawn in the browser and posted
+         * back to `files.stamp`, because there is no PDF library on these
+         * servers. The success page carries the code the browser needs.
+         */
+        $this->registrar->stampFile($document, $stored, $request->boolean('stamp', true));
+
+        /*
          * Set after registration rather than threaded through the registrar.
          *
          * The registrar is the work that is the same whichever screen an
@@ -530,6 +547,10 @@ class DocumentController extends Controller
 
         return Inertia::render('documents/upload-success', [
             'code' => $code,
+            // The id, so the form that just posted can ask for the stamp
+            // label and draw it into a PDF. The code alone names the
+            // document; the label endpoint is keyed on the row.
+            'documentId' => $document->id,
             'fileName' => $file_name,
             'qrCodeSvg' => $this->qrLabels->svg($target),
             'trackingUrl' => $target,
@@ -650,14 +671,34 @@ class DocumentController extends Controller
         // PublicTrackingController and TrackingCodeService::looksLikeCode().
         $code = Str::limit($request->string('code')->trim()->toString(), 64, '');
 
+        /*
+         * Which way in the screen opens on.
+         *
+         * `/scan` was a second page for one of the three — a camera wrapped
+         * in AdminShell, reachable from the dashboard and the landing page —
+         * and it answered a question this screen already answers with the
+         * same `QrScanner`. One screen for "I have a document and one of
+         * three ways to name it" is what the chooser is; a separate route
+         * for the middle one is the same list at two addresses, and the one
+         * nobody maintained is the one that drifts.
+         *
+         * Validated against the three the card knows, so a stray value opens
+         * on the code box rather than on nothing.
+         */
+        $method = $request->string('method')->toString();
+        $method = in_array($method, ['code', 'scan', 'upload'], true) ? $method : 'code';
+
         if ($code === '') {
-            return Inertia::render('documents/track');
+            return Inertia::render('documents/track', ['method' => $method]);
         }
 
         if (! TrackingCodeService::looksLikeCode($code)) {
             return Inertia::render('documents/track', [
                 'code' => $code,
                 'malformed' => true,
+                // Kept, so a label that would not read leaves somebody on the
+                // camera rather than back at the code box.
+                'method' => $method,
             ]);
         }
 
@@ -669,6 +710,7 @@ class DocumentController extends Controller
             return Inertia::render('documents/track', [
                 'code' => $code,
                 'notFound' => true,
+                'method' => $method,
             ]);
         }
 
@@ -721,12 +763,50 @@ class DocumentController extends Controller
         }
 
         return Inertia::render('documents/form', [
-            'document' => $document->only([
-                'id', 'title', 'document_type_id', 'type', 'code', 'file_path', 'file_name', 'visibility',
-                // So the toggle opens showing what the document actually
-                // holds rather than the default.
-                'comments_enabled',
-            ]),
+            'document' => [
+                ...$document->only([
+                    'id', 'title', 'document_type_id', 'type', 'code', 'file_path', 'file_name', 'visibility',
+                    // So the toggle opens showing what the document actually
+                    // holds rather than the default.
+                    'comments_enabled',
+                ]),
+                /*
+                 * What the file it already holds can carry, and whether it
+                 * carries it.
+                 *
+                 * The form could offer the stamp only for a *replacement*,
+                 * which is what it did — and that is the wrong rule: a
+                 * document filed before stamping existed, or one whose
+                 * uploader declined it at the time, can be stamped now
+                 * without re-uploading anything. The form needs both facts
+                 * to know whether the offer is worth making.
+                 */
+                'stamp' => $document->stamp->value,
+                /*
+                 * Whether these bytes already carry the code, answered by
+                 * the enum that owns the question.
+                 *
+                 * The form worked it out from the value — `pdf` or `image`
+                 * — which was true of the two formats stamping started
+                 * with and went wrong the moment Word, Excel and
+                 * PowerPoint were added: a document with a cover page read
+                 * as unstamped, so the switch sat off above a file that
+                 * carries its code, and turning it on saved nothing,
+                 * because the server refuses to draw a second cover page.
+                 * A screen saying "not stamped" about a stamped file, with
+                 * a control that does nothing, is the worst of both.
+                 */
+                'carries_the_code' => $document->stamp->carriesTheCode(),
+                'stamp_label' => $document->stamp->label(),
+                'can_stamp' => $document->file !== null && $this->stamps->plan(
+                    (string) $document->file->extension,
+                    (string) $document->file->mime_type,
+                ) !== DocumentStamp::Unsupported,
+                'needs_browser_stamp' => $document->file !== null && $this->stamps->plan(
+                    (string) $document->file->extension,
+                    (string) $document->file->mime_type,
+                ) === DocumentStamp::Pdf,
+            ],
             'types' => DocumentType::grouped(),
             'visibilities' => $this->visibilityOptions(),
             /*
@@ -928,6 +1008,15 @@ class DocumentController extends Controller
 
                 $document->update(['file_name' => $file->original_name]);
 
+                // The new version carries the same code, so it needs the
+                // same mark — and the row must stop claiming the one drawn
+                // into the bytes this just superseded.
+                $this->registrar->restampAfterReplacement(
+                    $document,
+                    $file,
+                    $request->boolean('stamp', true),
+                );
+
                 return $added;
             }
 
@@ -961,6 +1050,54 @@ class DocumentController extends Controller
          */
         if ($notify->isNotEmpty()) {
             Notification::send($notify, new PrivateDocumentShared($document, $user));
+        }
+
+        /*
+         * Stamp the file this document already holds, when it has none.
+         *
+         * The ordinary case is a replacement, handled inside the
+         * transaction above. This is the other one the office asked for: a
+         * document filed before stamping existed, or one whose uploader
+         * declined it at the time, marked now without re-uploading
+         * anything. An image is drawn here; a PDF is the browser's, and
+         * `stampFile()` opens the window for it by touching the file.
+         *
+         * Only when there is nothing there already — re-stamping a file that
+         * carries its code would re-encode an image for no reason, and a
+         * second cover page is not a correction of the first.
+         */
+        if (! $replacement
+            && $request->boolean('stamp')
+            && $document->fresh()->stamp === DocumentStamp::None
+            && $document->file) {
+            $this->registrar->stampFile($document->fresh(), $document->file);
+
+            /*
+             * And say so when nothing was drawn.
+             *
+             * `stampFile()` refuses rather than throws — a picture under
+             * 500 px on its short edge, one too large to hold in memory, a
+             * corrupt or unparseable file — and it was refusing silently
+             * into a flash that said "Document updated." So somebody turned
+             * the switch on, saved, was told it worked, and had a file that
+             * carries nothing: the one thing they cannot check by looking.
+             *
+             * A PDF is excluded because it is not a refusal: the server's
+             * part is to open the window and the browser draws it a moment
+             * later, reporting its own outcome either way.
+             */
+            $plan = $this->stamps->plan(
+                (string) $document->file->extension,
+                (string) $document->file->mime_type,
+            );
+
+            if ($plan !== DocumentStamp::Pdf && $document->fresh()->stamp === DocumentStamp::None) {
+                return to_route('documents.edit', $document)->with(
+                    'error',
+                    'The document was saved, but the tracking code could not be drawn into its file, so its bytes are unchanged. '
+                    .'A picture needs at least 500 pixels on its short edge to carry a readable mark, and a file this application cannot parse is left alone.',
+                );
+            }
         }
 
         return to_route('documents.edit', $document)->with('success', 'Document updated.');
@@ -1014,24 +1151,6 @@ class DocumentController extends Controller
         $document->restore();
 
         return back()->with('success', $document->code.' is back on the register.');
-    }
-
-    /**
-     * The camera page.
-     *
-     * Public, and a guest is forwarded to the public lookup rather than shown
-     * this page: the authenticated one is wrapped in AdminShell, which has a
-     * sidebar and a navigation grant behind it, and a scan that lands a
-     * courier on a sign-in form is no answer to somebody holding the folder.
-     * The public page reads a label with the same QrScanner component.
-     */
-    public function scan(Request $request): Response|RedirectResponse
-    {
-        if (! $request->user()) {
-            return to_route('tracking.public', ['method' => 'scan']);
-        }
-
-        return Inertia::render('documents/scan');
     }
 
     /**
@@ -1130,6 +1249,53 @@ class DocumentController extends Controller
             'download_url' => $manages && $document->qr_code_path !== null
                 ? route('documents.qrcode.download', ['file_name' => $document->qr_code_path])
                 : null,
+            /*
+             * The label to **stamp into the file**, which is a different
+             * artefact from the one above and encodes a different thing.
+             *
+             * The printable label points at `targetFor()` — the share link,
+             * for a document that has one — because it is a thing the
+             * uploader deliberately prints and can refresh when the link is
+             * regenerated. A stamp cannot be refreshed: it is in every copy
+             * already distributed, so a token baked into it would make
+             * `regenerateLink()` a lie for all of them and would put a
+             * bearer credential into the bytes of every file. It encodes the
+             * **tracking URL**, which is also the only symbol anyone has
+             * measured small — `QrLabelTest` decodes it at 128px, where the
+             * share-link symbol is denser and proven only at full size.
+             *
+             * To the uploader alone, and only where the format can carry
+             * one: this is a few kilobytes of base64 and there is no reason
+             * to send it to a reader, or for a `.docx`.
+             */
+            'stamp_png' => $manages && $this->stamps->plan(
+                (string) $document->file?->extension,
+                (string) $document->file?->mime_type,
+            ) === DocumentStamp::Pdf
+                ? base64_encode($this->qrLabels->png($this->qrLabels->trackingUrl($document->code)))
+                : null,
+            /*
+             * What a cover page says about the document, beside the symbol.
+             *
+             * A corner mark could only ever be the symbol. A page can carry
+             * the record — what this is, what kind of thing it is, and who
+             * may read it — which is what somebody holding a printout
+             * actually needs before they decide what to do with it.
+             *
+             * Sent from here rather than composed in the browser for the
+             * reason every other label is: the *type* is the name as it
+             * stood when the document was filed, and the level's wording
+             * belongs to `DocumentVisibility`. A page that wrote its own
+             * would be a second vocabulary to keep in step.
+             */
+            'cover' => $manages ? [
+                'title' => $document->title,
+                'type' => $document->type ?? $document->documentType?->name,
+                'visibility' => $document->visibility->label(),
+                'visibility_note' => $document->visibility->description(),
+                'uploader' => $document->uploaderName(),
+                'filed_on' => $document->created_at?->format('j F Y'),
+            ] : null,
         ]);
     }
 
@@ -1164,6 +1330,19 @@ class DocumentController extends Controller
         // value reaches a disk call.
         $path = 'qrcodes/'.basename($file_name);
         $disk = Storage::disk(FileStorage::DISK);
+
+        /*
+         * Drawn now, if it has not been drawn yet.
+         *
+         * An automatic filing does not render its label at registration — see
+         * `QrLabelService::materialise()` — so the first person to ask for
+         * one is what produces it. Idempotent, and it only ever writes the
+         * name already stored on the row, so nothing here widens what this
+         * route can reach.
+         */
+        if (! $disk->exists($path) && basename($file_name) === $document->qr_code_path) {
+            $this->qrLabels->materialise($document);
+        }
 
         // Labels written before the move to private storage are still on the
         // public disk. Serve whichever holds this one.

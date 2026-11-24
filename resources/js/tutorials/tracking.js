@@ -10,7 +10,7 @@ export default {
     hint: 'From the label on the folder',
     module: 'Documents',
     icon: 'fa-solid fa-qrcode',
-    paths: ['/scan', '/documents/track'],
+    paths: ['/documents/track'],
     permission: null,
     pages: [
         {
@@ -36,7 +36,7 @@ export default {
             ],
         },
         {
-            href: '/scan',
+            href: '/documents/track?method=scan',
             steps: [
                 {
                     element: '[data-tour="scanner"]',

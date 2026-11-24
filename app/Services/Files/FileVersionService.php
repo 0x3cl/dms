@@ -2,6 +2,7 @@
 
 namespace App\Services\Files;
 
+use App\Enums\DocumentStamp;
 use App\Models\File;
 use App\Models\FileVersion;
 use App\Models\User;
@@ -188,6 +189,12 @@ class FileVersionService
             'size_bytes' => $file->size_bytes,
             'checksum' => $file->checksum,
             'has_thumbnail' => $file->has_thumbnail,
+            // Whether *these* bytes carried their code. It travels with the
+            // descriptor like every other column here, so a superseded
+            // version keeps its own answer when the current one changes —
+            // which is the whole reason the stamp is on the file rather
+            // than on the document.
+            'stamp' => $file->stamp,
             'created_by_id' => $file->version_created_by_id,
             'created_by_name' => $file->version_created_by_name,
             'note' => $file->version_note,
@@ -219,6 +226,16 @@ class FileVersionService
             ...$descriptor,
             'version' => $version,
             'has_thumbnail' => false,
+            /*
+             * New bytes carry no mark until one is drawn into them.
+             *
+             * Reset here for the same reason `has_thumbnail` is: the row
+             * would otherwise claim a property belonging to the version it
+             * just superseded — which still has it, at its own path. The
+             * registrar recomputes what these bytes *can* carry and draws
+             * it, or hands a PDF to the browser.
+             */
+            'stamp' => DocumentStamp::None,
             'version_created_by_id' => $actor->id,
             'version_created_by_name' => $actor->name,
             'version_note' => $note,

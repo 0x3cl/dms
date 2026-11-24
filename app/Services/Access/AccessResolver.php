@@ -241,8 +241,11 @@ class AccessResolver
             return $subject->visibility->linkable();
         }
 
-        if ($subject instanceof File && $subject->document) {
-            return $subject->document->visibility->linkable();
+        // The governing document, for the reason `forFile()` asks for one: an
+        // automatic filing has no say over its file's visibility, so it must
+        // not decide whether that file may be reached by a link either.
+        if ($subject instanceof File && $subject->governingDocument()) {
+            return $subject->governingDocument()->visibility->linkable();
         }
 
         return $this->effectiveVisibility($subject)->linkable();
@@ -350,7 +353,20 @@ class AccessResolver
      */
     private function forFile(?User $user, File $file): AccessGrant
     {
-        $document = $file->document;
+        /*
+         * The document that *governs* these bytes, not merely one that
+         * points at them.
+         *
+         * Every uploaded file is filed now, so `$file->document` is true of
+         * almost every file and deferring on it would apply this clause to
+         * all of them — which is an outage rather than a protection: a
+         * colleague would lose the files inside a folder shared with them,
+         * and an administrator's read across storage would go blank, because
+         * both of those live in `forItem()` below and a deferred file never
+         * reaches it. Only a deliberate filing governs. See
+         * `File::governingDocument()`.
+         */
+        $document = $file->governingDocument();
 
         if ($document) {
             return $this->forDocument($user, $document);

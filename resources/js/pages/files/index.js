@@ -20,6 +20,8 @@ import UploadLimitsHint from '../../components/UploadLimitsHint';
 import ViewToggle from '../../components/ViewToggle';
 import SearchableSelect from '../../components/SearchableSelect';
 import usePreviewDescriptor from '../../composables/usePreviewDescriptor';
+import { csrfHeaders, csrfToken } from '../../csrf';
+import { pushToast } from '../../components/ToastStack';
 
 /**
  * My Files — the whole of a person's storage, their own and what has been
@@ -281,14 +283,136 @@ export default defineComponent({
             router.reload({ only: ['people', 'documentTypes', 'documentVisibilities'] });
         };
 
-        const submitUpload = () => uploads.post('/files/upload', {
-            forceFormData: true,
-            preserveScroll: true,
-            onSuccess: () => {
-                uploading.value = false;
-                uploads.reset('files', 'track', 'title', 'document_type_id', 'visibility', 'recipients');
-            },
-        });
+        /*
+         * Drawing the code into the PDFs the server could not.
+         *
+         * An image is stamped on the server with GD. A PDF cannot be — there
+         * is no PDF library on these servers — so the browser draws it and
+         * posts the result back, which is the second half of the same upload
+         * rather than a separate act.
+         *
+         * It runs **after** the upload has succeeded, against the refreshed
+         * listing: the server has filed each file by then, so the rows carry
+         * the codes, and matching on the names just uploaded is what pairs a
+         * code with the bytes still in hand. Doing it before would mean
+         * reserving codes for uploads that may never arrive.
+         *
+         * **A failure says so.** It was silent, on the reasoning that a stamp
+         * is not worth an error message over a finished upload — true of the
+         * upload, wrong about the person: they cannot tell a file that
+         * carries its code from one that does not by looking at it, so a
+         * silent failure means printing a document and finding at the
+         * counter that there is nothing to scan.
+         */
+        const stampingCount = ref(0);
+
+        const stampUploaded = async (pending) => {
+            const { stampable, stampPdf } = await import('../../stamp');
+            const candidates = pending.filter((file) => stampable(file));
+
+            if (candidates.length === 0) return;
+
+            const rows = props.files?.data ?? [];
+            const stamped_ok = [];
+            const failed = [];
+            stampingCount.value = candidates.length;
+
+            for (const file of candidates) {
+                try {
+                    const row = rows.find((candidate) => candidate.tracked
+                        && candidate.tracked.stamp === 'none'
+                        && candidate.tracked.label_url
+                        && (candidate.display_name === file.name || candidate.name === file.name));
+
+                    if (!row) continue;
+
+                    /*
+                     * The *stamp* label, which encodes the tracking URL —
+                     * not the printable one, which points at the share link
+                     * and must never be baked into bytes that have already
+                     * been handed out.
+                     */
+                    const response = await fetch(row.tracked.label_url, {
+                        headers: { Accept: 'application/json' },
+                        credentials: 'same-origin',
+                    });
+
+                    if (!response.ok) continue;
+
+                    const { stamp_png: png, cover } = await response.json();
+
+                    if (!png) continue;
+
+                    const stamped = await stampPdf(file, {
+                        labelPng: png,
+                        code: row.tracked.code,
+                        cover,
+                    });
+
+                    if (!stamped) continue;
+
+                    const body = new FormData();
+                    body.append('code', row.tracked.code);
+                    body.append('stamped', stamped, file.name);
+
+                    const saved = await fetch('/files/stamp', {
+                        method: 'POST',
+                        body,
+                        // See resources/js/csrf.js: the cookie is reissued on
+                        // every response, where the meta tag is rendered once
+                        // per full page load.
+                        headers: csrfHeaders(),
+                        credentials: 'same-origin',
+                    });
+
+                    if (saved.ok) {
+                        stamped_ok.push(row.tracked.code);
+                    } else {
+                        failed.push(`${row.tracked.code} (${saved.status})`);
+                    }
+                } catch (error) {
+                    failed.push(error?.message ?? file.name);
+                }
+            }
+
+            stampingCount.value = 0;
+
+            if (stamped_ok.length) {
+                pushToast({
+                    title: 'Tracking code stamped',
+                    message: stamped_ok.length === 1
+                        ? `${stamped_ok[0]} is on every page of that PDF.`
+                        : `${stamped_ok.length} PDFs now carry their codes.`,
+                    tone: 'success',
+                });
+            }
+
+            if (failed.length) {
+                pushToast({
+                    title: 'Some PDFs were not stamped',
+                    message: `They are filed and their bytes are unchanged — ${failed.join(', ')}. Open the document and use Download PNG to attach the label by hand.`,
+                    tone: 'error',
+                });
+            }
+
+            router.reload({ only: ['files'] });
+        };
+
+        const submitUpload = () => {
+            // Held before the form is reset, because the reset is what makes
+            // the bytes unreachable and the stamp needs them.
+            const pending = [...(uploads.files ?? [])];
+
+            return uploads.post('/files/upload', {
+                forceFormData: true,
+                preserveScroll: true,
+                onSuccess: () => {
+                    uploading.value = false;
+                    uploads.reset('files', 'track', 'title', 'document_type_id', 'visibility', 'recipients');
+                    stampUploaded(pending);
+                },
+            });
+        };
 
         const renaming = ref(null);
         const renameForm = useForm({ kind: 'file', public_id: '', name: '' });
@@ -420,7 +544,8 @@ export default defineComponent({
 
             const token = document.createElement('input');
             token.name = '_token';
-            token.value = document.querySelector('meta[name="csrf-token"]')?.content ?? '';
+            // A real form post, so it carries the field rather than a header.
+            token.value = csrfToken();
             form.appendChild(token);
 
             selected.value.forEach((publicId) => {
@@ -435,16 +560,7 @@ export default defineComponent({
             form.remove();
         };
 
-        return {
-            replacing, versioning,
-            canTrack, chooseFiles, openUploadDialog, trackedVisibility,
-            act, activeFilters, applyFilters, changingPrivacy, clearSelection, closePreview, confirmDelete, openFolderDialog,
-            confirmRelocate, creatingFolder, deleteError, deleteProcessing, deleting, downloadSelection,
-            filtering, filters, folderHref, load, navigatePreview, newFolder, onOpen, openPreview, page,
-            prefetchPreview, previewFile, previewIndex, previewLoading, previewVersionsHref, previewable, privacyForm, relocateError, relocateProcessing, relocating,
-            renameForm, renaming, search, selected, selectedRows, setView, sharing, sortBy, startDelete,
-            startRelocate, submitFolder, submitPrivacy, submitRename, submitUpload, uploading, uploads,
-        };
+        return { act, activeFilters, applyFilters, canTrack, changingPrivacy, chooseFiles, clearSelection, closePreview, confirmDelete, confirmRelocate, creatingFolder, deleteError, deleteProcessing, deleting, downloadSelection, filtering, filters, folderHref, load, navigatePreview, newFolder, onOpen, openFolderDialog, openPreview, openUploadDialog, page, prefetchPreview, previewable, previewFile, previewIndex, previewLoading, previewVersionsHref, privacyForm, relocateError, relocateProcessing, relocating, renameForm, renaming, replacing, search, selected, selectedRows, setView, sharing, sortBy, stampingCount, startDelete, startRelocate, submitFolder, submitPrivacy, submitRename, submitUpload, trackedVisibility, uploading, uploads, versioning };
     },
     template: `
     <Head title="My Files" />

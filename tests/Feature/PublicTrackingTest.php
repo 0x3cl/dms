@@ -235,8 +235,42 @@ class PublicTrackingTest extends TestCase
         $this->get($url)->assertNotFound();
     }
 
-    public function test_scanning_sends_a_visitor_to_the_public_lookup(): void
+    /**
+     * `/scan` is gone, and the lookup opens on the camera instead.
+     *
+     * It was a third address for the middle of three ways to name a
+     * document — a camera page reachable from the landing page and the
+     * dashboard, forwarding a guest here and rendering its own screen for
+     * anybody signed in. Both lookups already read a label with the same
+     * `QrScanner`, so it was one list at three addresses, and the one nobody
+     * maintains is the one that drifts.
+     *
+     * What replaced it is a parameter on the screens that already existed:
+     * a visitor gets this one, somebody signed in gets the register's own.
+     * The route answering nothing is asserted too, because a removal that
+     * leaves the old address serving is not a removal.
+     */
+    public function test_the_scan_route_is_gone_and_the_lookup_opens_on_the_camera(): void
     {
-        $this->get('/scan')->assertRedirect('/track?method=scan');
+        $this->get('/scan')->assertNotFound();
+
+        $this->get('/track?method=scan')
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('track/index', false)
+                ->where('method', 'scan'));
+
+        // And the register's own lookup, for somebody with an account.
+        $this->actingAs(User::factory()->create())
+            ->get('/documents/track?method=scan')
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('documents/track', false)
+                ->where('method', 'scan'));
+
+        // A stray value opens on the code box rather than on nothing.
+        $this->actingAs(User::factory()->create())
+            ->get('/documents/track?method=nonsense')
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->component('documents/track', false)
+                ->where('method', 'code'));
     }
 }

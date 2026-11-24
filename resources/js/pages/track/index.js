@@ -64,16 +64,21 @@ export default defineComponent({
     <Head :title="result && result.open ? result.title : 'Track a document'" />
     <main class="flex-1 bg-slate-50 px-4 py-8 sm:px-6 sm:py-10">
         <!--
-            Two widths, because this page is two pages.
+            One width, because this page is one page at two lengths.
 
-            With an answer on screen it carries a file preview and a details
-            card, which want the room. With no answer it is a single short
-            form, and 4xl made that form a wide expanse of card around one
-            input — it read as a page still loading rather than as a thing to
-            type in. Narrowing only the empty state leaves the answer at the
-            width it needs.
+            It used to be two: 4xl with an answer on screen, which carries a
+            file preview and a details card, and 2xl without — set when the
+            empty state really was a single input, where the wider card read
+            as a page still loading rather than as a thing to type in.
+
+            The empty state is a chooser over three ways in now, and three
+            cards do not fit a narrow column: each one became a strip with
+            its title on one line and its hint wrapping over two, which reads
+            as crowded rather than as a choice. At one width the three sit
+            side by side with room to breathe, and the page does not resize
+            under somebody between asking and being answered.
         -->
-        <div class="mx-auto w-full" :class="result ? 'max-w-4xl' : 'max-w-2xl'">
+        <div class="mx-auto w-full max-w-4xl">
 
             <!-- The answer, when there is one. -->
             <Card v-if="result" class="rounded-2xl">

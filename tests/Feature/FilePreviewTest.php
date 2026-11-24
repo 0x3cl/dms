@@ -257,9 +257,18 @@ class FilePreviewTest extends TestCase
 
     /**
      * A preview is re-requested on every resize, re-mount and reload, so the
-     * second look has to be free — but only for the person who already passed
-     * the gate. `private` is what keeps a proxy from holding a confidential
-     * document and handing it to whoever asks for the URL next.
+     * second look has to be nearly free — but only for the person who already
+     * passed the gate. `private` is what keeps a proxy from holding a
+     * confidential document and handing it to whoever asks for the URL next.
+     *
+     * **Revalidated rather than held.** It was `max-age=600`, which means "do
+     * not even ask" and so skipped the validator below for ten minutes. That
+     * is safe only while a URL's bytes cannot change under it — true of a
+     * replacement, which carries its version in the URL, and false of a
+     * **stamp**, which rewrites a file in place and keeps its version on
+     * purpose. Somebody who had just stamped a document was served their own
+     * copy of it from before the mark, which looks exactly like a stamp that
+     * never happened.
      */
     public function test_a_preview_response_is_cacheable_privately_and_carries_a_validator(): void
     {
@@ -273,7 +282,7 @@ class FilePreviewTest extends TestCase
         $cacheControl = (string) $response->headers->get('Cache-Control');
 
         $this->assertStringContainsString('private', $cacheControl);
-        $this->assertStringContainsString('max-age=600', $cacheControl);
+        $this->assertStringContainsString('no-cache', $cacheControl);
         $this->assertStringNotContainsString('public', $cacheControl);
 
         // The validator is the content hash, so it changes if and only if the

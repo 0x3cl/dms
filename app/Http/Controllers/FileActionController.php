@@ -2,17 +2,20 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\DocumentStamp;
 use App\Enums\DocumentVisibility;
 use App\Enums\FileAbility;
 use App\Enums\FileVisibility;
 use App\Enums\GranteeType;
 use App\Enums\ShareAbility;
+use App\Models\Document;
 use App\Models\DocumentType;
 use App\Models\File;
 use App\Models\Folder;
 use App\Models\User;
 use App\Services\Access\AccessResolver;
 use App\Services\Documents\DocumentRegistrar;
+use App\Services\Documents\DocumentStampService;
 use App\Services\Files\ArchiveService;
 use App\Services\Files\DeletionConfirmation;
 use App\Services\Files\FileManager;
@@ -44,6 +47,7 @@ class FileActionController extends Controller
         private readonly UploadPolicy $policy,
         private readonly ArchiveService $archives,
         private readonly AccessResolver $access,
+        private readonly DocumentStampService $stamps,
         private readonly DeletionConfirmation $confirmation,
         private readonly SharingService $sharing,
         private readonly DocumentRegistrar $registrar,
@@ -222,10 +226,53 @@ class FileActionController extends Controller
 
         $count = 0;
         $stored = null;
+        $filed = [];
 
         foreach ($request->file('files') as $upload) {
-            $stored = $this->manager->upload($user, $folder, $upload, $request);
+            $file = $this->manager->upload($user, $folder, $upload, $request);
             $count++;
+
+            /*
+             * Every uploaded file is filed, and the deliberate one is filed
+             * by the branch below instead.
+             *
+             * This is the office's rule — every file carries a tracking code
+             * and a QR — applied where files actually arrive. It is the same
+             * `DocumentRegistrar` the register's own form calls, with the
+             * type inferred and the title taken from the filename, because
+             * neither was asked for here.
+             *
+             * An automatic filing does not govern who may read the file; see
+             * `File::governingDocument()`. Without that this loop would cut
+             * every folder-share grantee off from the files inside the folder
+             * shared with them.
+             *
+             * The deliberate branch is skipped rather than tested per upload:
+             * `track` validates `files` to exactly one, so a tracked request
+             * has a single file and it is filed below, with the title, type
+             * and classification the person actually chose.
+             */
+            if (! $tracking) {
+                $wantsStamp = $request->boolean('stamp', true);
+
+                $document = $this->registrar->registerAutomatically(
+                    $file,
+                    $user,
+                    $request,
+                    wantsStamp: $wantsStamp,
+                );
+
+                if ($document) {
+                    // The code into the bytes, where the format allows one
+                    // and the uploader wants one. After the document exists,
+                    // because the stamp contains its code.
+                    $this->registrar->stampFile($document, $file, $wantsStamp);
+
+                    $filed[] = $document->code;
+                }
+            }
+
+            $stored = $file;
         }
 
         if ($tracking && $stored !== null) {
@@ -242,7 +289,89 @@ class FileActionController extends Controller
             return back()->with('success', "Uploaded and tracked as {$document->code}.");
         }
 
-        return back()->with('success', $count === 1 ? 'File uploaded.' : "{$count} files uploaded.");
+        if (count($filed) === 1) {
+            return back()->with('success', "File uploaded and filed as {$filed[0]}.");
+        }
+
+        return back()->with('success', $count === 1
+            ? 'File uploaded.'
+            : "{$count} files uploaded".($filed === [] ? '.' : ', each with its own tracking code.'));
+    }
+
+    /**
+     * Finish an upload by accepting the stamp the browser drew.
+     *
+     * A PDF is the one format this server cannot draw into — there is no PDF
+     * library here and the documented constraint is that there will not be
+     * one — so `pdf-lib` draws the code onto every page in the browser and
+     * posts the result back. The bytes are written over the stored file
+     * exactly as the image path writes over its own.
+     *
+     * **This is a one-shot completion of an upload, not a way to rewrite a
+     * file.** Accepting bytes that overwrite stored content is precisely the
+     * capability `FileManager::replace()` exists to version and audit, so
+     * every one of these has to hold, and the refusal is a 404 like every
+     * other refusal on a route that takes an identifier:
+     *
+     * - the actor **owns** the file — not a manage share, which would make
+     *   this a quieter `replace()` for anybody holding one;
+     * - the format **plans as a PDF**, so this cannot be used to put
+     *   arbitrary bytes behind a `.docx`;
+     * - the document's stamp is still `None`, so it works once;
+     * - the document was filed **minutes ago**, so it closes behind the
+     *   upload it belongs to rather than staying open on every file forever.
+     *
+     * What it cannot check is that the bytes really are the uploaded file
+     * with a stamp on them. That is inherent to drawing in the browser and
+     * is the cost of the only PDF path available here — which is why the
+     * window, the ownership and the one-shot are as narrow as they are.
+     */
+    public function stamp(Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            // The tracking code, not the file's id: both upload paths have
+            // the code to hand — My Files reads it off the row it just
+            // created, and the register's success page is rendered with it —
+            // where only one of them ever sees a `files` public id.
+            'code' => ['required', 'string', 'max:64'],
+            'stamped' => ['required', 'file', 'mimetypes:application/pdf', 'max:'.(25 * 1024)],
+        ]);
+
+        $user = $request->user();
+
+        $document = Document::query()->where('code', $validated['code'])->first();
+
+        abort_if($document === null, 404);
+        abort_unless((int) $document->user_id === (int) $user->id, 404);
+
+        $file = $document->file;
+
+        abort_if($file === null, 404);
+        abort_unless($document->stamp === DocumentStamp::None, 404);
+        abort_unless(
+            $this->stamps->plan((string) $file->extension, (string) $file->mime_type) === DocumentStamp::Pdf,
+            404,
+        );
+        /*
+         * Minutes since the **bytes** last changed, not since the document
+         * was filed.
+         *
+         * It was the document's age, which closed the window for the case
+         * this most needs to stay open for: replacing the file of a document
+         * filed last year is exactly when a new version arrives needing its
+         * mark, and the document is months old at that moment. The file's
+         * own timestamp moves with every upload and every replacement, which
+         * is the act this is the second half of.
+         */
+        abort_unless($file->updated_at?->gt(now()->subMinutes(10)) ?? false, 404);
+
+        $this->registrar->acceptStamp(
+            $document,
+            $file,
+            (string) file_get_contents($validated['stamped']->getRealPath()),
+        );
+
+        return back()->with('success', "Tracking code stamped onto {$document->code}.");
     }
 
     public function rename(Request $request): RedirectResponse
@@ -298,6 +427,19 @@ class FileActionController extends Controller
             $validated['note'] ?? null,
             $request,
         );
+
+        /*
+         * The new version carries the same tracking code, so it needs the
+         * same mark — and the row must stop claiming the one drawn into the
+         * bytes this just superseded.
+         */
+        if ($updated->document) {
+            $this->registrar->restampAfterReplacement(
+                $updated->document,
+                $updated,
+                $request->boolean('stamp', true),
+            );
+        }
 
         return back()->with('success', "Saved as version {$updated->versionNumber()}.");
     }

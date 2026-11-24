@@ -51,7 +51,11 @@ export default defineComponent({
                     </span>
                     <i class="fa-solid fa-arrow-right text-slate-300 transition group-hover:translate-x-1 group-hover:text-[#00aeef]" aria-hidden="true"></i>
                 </Link>
-                <Link href="/scan" class="group flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+                <!-- The lookup, opened on the camera. There is no separate scan page:
+                     one screen asks "which of three ways do you have to name this
+                     document", and a route for the middle one was that list at a
+                     second address. -->
+                <Link href="/documents/track?method=scan" class="group flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
                     <span class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-sky-100 text-lg text-[#07559e]"><i class="fa-solid fa-qrcode" aria-hidden="true"></i></span>
                     <span class="min-w-0 flex-1">
                         <span class="block text-sm font-bold uppercase tracking-wide text-slate-800">Scan a QR code</span>

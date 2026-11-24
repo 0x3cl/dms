@@ -20,6 +20,9 @@ class VersionedFilename
     /** Matches a stamp this class already applied, at the end of a name. */
     private const STAMP = '/\s*\(v\d+\)$/';
 
+    /** Matches a tracking code this class already put in front of a name. */
+    private const CODE = '/^[A-Za-z0-9_-]{1,16}-\d{8}-\d{3,8} — /u';
+
     /**
      * `report.docx` at version 3 becomes `report (v3).docx`.
      *
@@ -33,6 +36,39 @@ class VersionedFilename
      * opens the file with: `report.docx (v3)` is not a Word document as far
      * as a desktop is concerned.
      */
+    /**
+     * `report.docx` filed as `MEMO-20261123-0007` becomes
+     * `MEMO-20261123-0007 — report.docx`.
+     *
+     * **The one way every format carries its code.** A PDF is stamped on its
+     * pages and an image in its corner, but a video, an MP3, a zip, a
+     * spreadsheet and a plain text file have no surface to draw on — writing
+     * into OOXML needs a library this project does not have, and appending a
+     * line to a `.txt` is a destructive edit of the content itself. The
+     * *name* is the surface those formats do have: it survives a download, a
+     * copy onto a USB stick and an email attachment, and it is what somebody
+     * types into the lookup when they are holding the file and nothing else.
+     *
+     * Applied when the file is **served**, never on the model, for exactly
+     * the reason the version stamp is: `downloadName()` is the file's name
+     * and the audit trail snapshots it, so putting a code in there would
+     * rewrite the record of what a file was called.
+     *
+     * An existing code is replaced rather than stacked, so downloading,
+     * re-uploading and downloading again does not produce a name with three
+     * codes in front of it.
+     */
+    public static function withCode(string $name, ?string $code): string
+    {
+        if ($code === null || $code === '' || $name === '') {
+            return $name;
+        }
+
+        $name = (string) preg_replace(self::CODE, '', $name);
+
+        return $code.' — '.$name;
+    }
+
     public static function stamp(string $name, ?int $version): string
     {
         if ($version === null || $name === '') {

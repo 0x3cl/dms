@@ -256,6 +256,96 @@ class FileLifecycleTest extends TestCase
             ->assertNotFound();
     }
 
+    /**
+     * Restoring from inside a deleted folder must not 404 the person who did it.
+     *
+     * A restore revives the chain above the item, so the folder they were
+     * browsing is no longer trashed — and `?folder=` was looked up
+     * `onlyTrashed()`, which made the redirect back answer "document or file
+     * not found" about the thing that had just come back.
+     */
+    public function test_browsing_the_trash_of_a_folder_that_is_no_longer_deleted_goes_to_the_trash(): void
+    {
+        $user = User::factory()->create();
+        $parent = $this->folder($user, $this->root($user), 'Reports');
+        $file = $this->fileIn($parent, $user, 'q1.pdf');
+
+        $this->destroy($user, [['kind' => 'folder', 'public_id' => $parent->public_id]]);
+
+        $inside = "/files/trash?folder={$parent->public_id}";
+
+        $this->actingAs($user)
+            ->from($inside)
+            ->post('/files/restore', ['kind' => 'file', 'public_id' => $file->public_id])
+            ->assertRedirect($inside);
+
+        $this->actingAs($user)->get($inside)->assertRedirect('/files/trash');
+    }
+
+    /**
+     * Restoring one of two files out of a deleted folder leaves the other
+     * inside that folder, in the trash and visibly so.
+     *
+     * The restore revives the folder — it must, or the file would come back
+     * somewhere no listing reaches — and the trash then dropped the folder and
+     * surfaced the remaining file loose at its top level, which reads as "this
+     * is in your storage root". The file had not moved at all.
+     */
+    public function test_a_partly_restored_folder_keeps_the_rest_of_its_delete_inside_it(): void
+    {
+        $user = User::factory()->create();
+        $parent = $this->folder($user, $this->root($user), '123');
+        $first = $this->fileIn($parent, $user, 'one.pdf');
+        $this->fileIn($parent, $user, 'two.pdf');
+
+        $this->destroy($user, [['kind' => 'folder', 'public_id' => $parent->public_id]]);
+
+        $this->actingAs($user)
+            ->post('/files/restore', ['kind' => 'file', 'public_id' => $first->public_id])
+            ->assertSessionHasNoErrors();
+
+        // The folder is back, and `two.pdf` is still in it and still deleted.
+        $parent->refresh();
+        $this->assertFalse($parent->trashed());
+        $this->assertSame($parent->id, File::onlyTrashed()->where('name', 'two.pdf')->value('folder_id'));
+
+        // The top of the trash lists the folder, not the file.
+        $top = $this->actingAs($user)->get('/files/trash')->assertOk()->viewData('page')['props'];
+
+        $this->assertSame(['123'], array_column((array) $top['folders'], 'name'));
+        $this->assertTrue($top['folders'][0]['partly_restored']);
+        $this->assertSame(1, $top['folders'][0]['contains']['files']);
+        $this->assertSame([], array_column($top['files']['data'], 'name'));
+
+        // It offers nothing to do to a folder that is already back.
+        $this->assertFalse($top['folders'][0]['can']['restore']);
+        $this->assertFalse($top['folders'][0]['can']['purge']);
+
+        // And opening it shows what is left.
+        $inside = $this->actingAs($user)
+            ->get("/files/trash?folder={$parent->public_id}")
+            ->assertOk()
+            ->viewData('page')['props'];
+
+        $this->assertSame(['two.pdf'], array_column($inside['files']['data'], 'name'));
+        $this->assertTrue($inside['folder']['partly_restored']);
+    }
+
+    /** A file deleted on its own out of a live folder is still a top-level row. */
+    public function test_a_file_deleted_by_itself_stays_at_the_top_of_the_trash(): void
+    {
+        $user = User::factory()->create();
+        $parent = $this->folder($user, $this->root($user), 'Reports');
+        $file = $this->fileIn($parent, $user, 'notes.pdf');
+
+        $this->destroy($user, [['kind' => 'file', 'public_id' => $file->public_id]]);
+
+        $props = $this->actingAs($user)->get('/files/trash')->assertOk()->viewData('page')['props'];
+
+        $this->assertSame(['notes.pdf'], array_column($props['files']['data'], 'name'));
+        $this->assertSame([], array_column((array) $props['folders'], 'name'));
+    }
+
     // ------------------------------------------------------------ restoring
 
     /** A restore puts the item back where it came from. */

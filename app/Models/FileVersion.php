@@ -50,7 +50,8 @@ class FileVersion extends Model implements StoredBytes
         'mime_type', 'size_bytes', 'checksum', 'has_thumbnail',
         'created_by_id', 'created_by_name', 'note', 'reverted_from',
         'became_current_at', 'superseded_at',
-    ];
+
+        'stamp', ];
 
     protected $casts = [
         'version' => 'integer',
@@ -59,7 +60,8 @@ class FileVersion extends Model implements StoredBytes
         'reverted_from' => 'integer',
         'became_current_at' => 'datetime',
         'superseded_at' => 'datetime',
-    ];
+
+        'stamp' => \App\Enums\DocumentStamp::class, ];
 
     public function file(): BelongsTo
     {

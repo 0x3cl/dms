@@ -117,14 +117,6 @@ Route::get('/track', [PublicTrackingController::class, 'show'])
     ->middleware('throttle:30,1')
     ->name('tracking.public');
 
-/*
- * Scanning is public too, and the page behind it is not. A guest is handed
- * the public lookup — which reads a label with the same camera — rather than
- * a sign-in form, because a sign-in form is no answer at all to somebody
- * holding the folder.
- */
-Route::get('/scan', [DocumentController::class, 'scan'])->name('scan.qr');
-
 // Authenticated
 Route::middleware(['auth'])->group(function () {
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
@@ -420,6 +412,14 @@ Route::middleware(['auth'])->group(function () {
     Route::middleware('permission:files.create')->group(function () {
         Route::post('/files/folders', [FileActionController::class, 'storeFolder'])->name('files.folders.store');
         Route::post('/files/upload', [FileActionController::class, 'upload'])->name('files.upload');
+        /*
+         * The second half of an upload, for the one format this server
+         * cannot draw into: the browser stamps a PDF and posts it back. Same
+         * grant as the upload it completes, because that is what it is —
+         * see FileActionController::stamp() for why it is not a general
+         * write.
+         */
+        Route::post('/files/stamp', [FileActionController::class, 'stamp'])->name('files.stamp');
         Route::post('/files/copy', [FileActionController::class, 'copy'])->name('files.copy');
     });
     Route::middleware('permission:files.edit')->group(function () {

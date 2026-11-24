@@ -17,6 +17,7 @@ use App\Services\Access\AccessSource;
 use App\Services\Files\FileManager;
 use App\Services\Files\UploadPolicy;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Inertia\Inertia;
@@ -193,7 +194,7 @@ class FileManagerController extends Controller
      * `onlyTrashed()`, so nothing here is reachable by its ordinary route and
      * nothing is quietly restored by looking at it.
      */
-    public function trash(Request $request): Response
+    public function trash(Request $request): Response|RedirectResponse
     {
         $user = $request->user();
         $entries = $this->entries($request);
@@ -206,17 +207,34 @@ class FileManagerController extends Controller
             : $this->direction($request);
         $folder = $this->locateTrashedFolder($request, $user);
 
+        // The folder somebody was browsing has been restored out from under
+        // them; `locateTrashedFolder()` says where to send them instead.
+        if ($folder instanceof RedirectResponse) {
+            return $folder;
+        }
+
         $files = File::onlyTrashed()
             ->where('user_id', $user->id)
             ->matching($search)
             ->when(
                 $folder,
                 fn (Builder $query) => $query->where('folder_id', $folder->id),
-                fn (Builder $query) => $query->whereNotIn(
-                    'folder_id',
-                    Folder::onlyTrashed()->where('user_id', $user->id)->select('id')
-                ),
+                fn (Builder $query) => $query
+                    ->whereNotIn(
+                        'folder_id',
+                        Folder::onlyTrashed()->where('user_id', $user->id)->select('id')
+                    )
+                    // And not one that went down with its folder in a delete
+                    // the folder has since been restored out of: it belongs
+                    // under that folder, not loose at the top of the trash.
+                    ->whereNotExists(fn ($sub) => $sub
+                        ->selectRaw('1')
+                        ->from('folders')
+                        ->whereColumn('folders.id', 'files.folder_id')
+                        ->whereColumn('folders.deleted_batch', 'files.deleted_batch')),
             );
+
+        $remnants = $this->partlyRestoredFolders($user);
 
         $folders = Folder::onlyTrashed()
             ->where('user_id', $user->id)
@@ -228,10 +246,16 @@ class FileManagerController extends Controller
                 // The top of the trash: only folders whose own parent is still
                 // there. A subtree appears once, at the folder that was
                 // deleted, rather than once per level.
-                fn (Builder $query) => $query->whereNotIn(
-                    'parent_id',
-                    Folder::onlyTrashed()->where('user_id', $user->id)->select('id')
-                ),
+                fn (Builder $query) => $query
+                    ->whereNotIn(
+                        'parent_id',
+                        Folder::onlyTrashed()->where('user_id', $user->id)->select('id')
+                    )
+                    ->whereNotExists(fn ($sub) => $sub
+                        ->selectRaw('1')
+                        ->from('folders as parents')
+                        ->whereColumn('parents.id', 'folders.parent_id')
+                        ->whereColumn('parents.deleted_batch', 'folders.deleted_batch')),
             );
 
         /*
@@ -287,12 +311,16 @@ class FileManagerController extends Controller
                 ->withQueryString()
                 ->through(fn (File $file) => $this->trashedFilePayload($file, $user)),
             'folders' => $folders->orderBy('name')->get()
+                ->concat($this->remnantFolders($user, $search, $folder, $remnants))
+                ->sortBy('name')
+                ->values()
                 ->map(fn (Folder $child) => $this->trashedFolderPayload($child, $user)),
             'folder' => $folder ? [
                 'public_id' => $folder->public_id,
                 'name' => $folder->name,
                 'is_root' => false,
                 'is_mine' => $folder->user_id === $user->id,
+                'partly_restored' => ! $folder->trashed(),
             ] : null,
             'breadcrumbs' => $folder ? $this->trashedBreadcrumbs($folder) : [],
             'filters' => [...$this->filters($request), 'sort' => $sort, 'direction' => $direction],
@@ -498,7 +526,92 @@ class FileManagerController extends Controller
      * soft-deleted item is out of every listing, so a share on it cannot be the
      * claim — the same rule FileManager::restore() applies.
      */
-    private function locateTrashedFolder(Request $request, User $user): ?Folder
+    /**
+     * The folders a delete took that have been restored while part of what
+     * they held is still in the trash.
+     *
+     * Restoring one file out of a deleted folder revives the folder with it —
+     * it has to, or the file would come back inside something no listing can
+     * reach. What that left behind was a trash whose grouping lied: the folder
+     * vanished from it and its remaining files surfaced loose at the top,
+     * reading as "these are in your storage root" when they had never moved.
+     *
+     * So the folder stays in the trash for as long as it still holds anything
+     * the same delete took, and its remaining contents stay inside it. It is
+     * listed there as a container and nothing more: it is not deleted, so it
+     * can be neither restored nor erased, and a row for it would be an offer
+     * to do something to a folder that is already back.
+     *
+     * `deleted_batch` is what makes this a different thing from an ordinary
+     * file deleted out of a live folder — that one *is* the thing deleted and
+     * belongs at the top of the trash. A row left behind by a folder's delete
+     * carries that delete's own stamp, which the restore deliberately does not
+     * clear.
+     *
+     * @return \Illuminate\Support\Collection<int, Folder>
+     */
+    private function partlyRestoredFolders(User $user): Collection
+    {
+        return Folder::query()
+            ->where('user_id', $user->id)
+            ->where('is_root', false)
+            ->whereNotNull('deleted_batch')
+            ->get()
+            ->filter(fn (Folder $folder) => $this->holdsBatchRemnants($folder));
+    }
+
+    /**
+     * Is anything from this folder's own delete still in the trash, anywhere
+     * beneath it?
+     *
+     * The whole subtree rather than the direct children, so a folder two
+     * levels above the last trashed row is still the thing somebody opens to
+     * find it — the chain between them was revived by the same restore.
+     */
+    private function holdsBatchRemnants(Folder $folder): bool
+    {
+        $subtree = Folder::withTrashed()->subtreeOf($folder)->select('id');
+
+        return File::onlyTrashed()
+            ->where('deleted_batch', $folder->deleted_batch)
+            ->whereIn('folder_id', $subtree)
+            ->exists()
+            || Folder::onlyTrashed()
+                ->where('deleted_batch', $folder->deleted_batch)
+                ->whereIn('id', $subtree)
+                ->exists();
+    }
+
+    /**
+     * Which of those containers belong at the level being looked at.
+     *
+     * One nested inside another is listed inside it, exactly as a trashed
+     * folder inside a trashed folder is — the top of the trash lists what a
+     * delete took, once.
+     *
+     * @param  \Illuminate\Support\Collection<int, Folder>  $remnants
+     * @return \Illuminate\Support\Collection<int, Folder>
+     */
+    private function remnantFolders(User $user, string $search, ?Folder $folder, Collection $remnants): Collection
+    {
+        $ids = $remnants->pluck('id')->all();
+
+        return $remnants
+            ->when(
+                $search !== '',
+                fn (Collection $rows) => $rows->filter(
+                    fn (Folder $row) => str_contains(mb_strtolower($row->name), mb_strtolower($search))
+                ),
+            )
+            ->filter(fn (Folder $row) => $folder
+                ? $row->parent_id === $folder->id
+                : ! in_array($row->parent_id, $ids, true) && ! Folder::onlyTrashed()
+                    ->where('user_id', $user->id)
+                    ->whereKey($row->parent_id)
+                    ->exists());
+    }
+
+    private function locateTrashedFolder(Request $request, User $user): Folder|RedirectResponse|null
     {
         $publicId = $request->string('folder')->toString();
 
@@ -506,10 +619,29 @@ class FileManagerController extends Controller
             return null;
         }
 
-        $folder = Folder::onlyTrashed()->where('public_id', $publicId)->first();
+        $folder = Folder::withTrashed()->where('public_id', $publicId)->first();
 
         abort_if($folder === null, 404);
         abort_unless($folder->user_id === $user->id || $user->can('files.manage'), 404);
+
+        /*
+         * The folder is no longer deleted, which is the *ordinary* outcome of
+         * using this screen rather than an odd one: restoring anything inside
+         * a deleted folder revives the chain above it, so the view somebody is
+         * standing in stops existing the moment they restore from it. Looked
+         * up with `onlyTrashed()`, the redirect back after a successful
+         * restore 404'd — telling somebody that what they had just put back
+         * does not exist.
+         *
+         * So a live folder sends them to the top of the trash, where the rest
+         * of what they deleted is. Not into the folder in My Files: a restore
+         * from in here is usually one of several, and a bookmark or a back
+         * button lands on the same URL with no restore behind it at all.
+         * A folder that is not theirs still 404s, before this.
+         */
+        if (! $folder->trashed() && ! $this->holdsBatchRemnants($folder)) {
+            return redirect()->route('files.trash');
+        }
 
         return $folder;
     }
@@ -638,6 +770,43 @@ class FileManagerController extends Controller
                     'code' => $file->document->code,
                     'title' => $file->document->title,
                     'url' => route('documents.view', ['code' => $file->document->code]),
+                    /*
+                     * How it was filed, and whether the bytes carry the code.
+                     *
+                     * `filed` so a row can be quiet about an automatic
+                     * filing — the badge appears on nearly every row now, and
+                     * a loud chip on all of them says nothing.
+                     *
+                     * `stamp` because it is the one thing a reader cannot
+                     * work out by looking: whether printing this file carries
+                     * its code or loses it. It is also what the upload dialog
+                     * reads to find the PDFs it still has to draw into, since
+                     * only the browser can draw into one.
+                     */
+                    'filed' => $file->document->filed->value,
+                    'stamp' => $file->document->stamp->value,
+                    /*
+                     * The label, to its owner only, and only where there is
+                     * one to name.
+                     *
+                     * `qr_code_path` is nullable and rows that predate labels
+                     * carry null, which `route()` refuses outright rather
+                     * than rendering an empty segment — a 500 on the whole
+                     * listing for one old row. The owner check matches the
+                     * download route's own: a label is a credential for a
+                     * public document, so it is never offered to a reader.
+                     */
+                    /*
+                     * Where this row's labels come from, to its owner only.
+                     *
+                     * The endpoint answers with both: the printable label's
+                     * download URL, and the base64 symbol to stamp into the
+                     * bytes. They encode different things deliberately — see
+                     * `stamp_png` on DocumentController::qrLabel().
+                     */
+                    'label_url' => (int) $file->document->user_id === (int) $user->id
+                        ? route('documents.qr-label', ['document' => $file->document->id])
+                        : null,
                 ]
                 : null,
             'created_at' => $file->created_at,
@@ -783,14 +952,20 @@ class FileManagerController extends Controller
             'deleted_at' => $folder->deleted_at,
             'created_at' => $folder->created_at,
             'updated_at' => $folder->updated_at,
-            // What went down with it, so the trash can say "4 folders, 31
-            // files" before anything is restored or purged.
+            // What is still in the trash under it, so the card can say "4
+            // folders, 31 files" before anything is restored or purged. Only
+            // trashed rows are counted: everything under a deleted folder is
+            // deleted, so this is unchanged for one of those, and a partly
+            // restored container must not count what has already come back.
             'contains' => [
-                'folders' => Folder::withTrashed()->subtreeOf($folder)->count() - 1,
-                'files' => File::withTrashed()
+                'folders' => Folder::onlyTrashed()->subtreeOf($folder)->count() - ($folder->trashed() ? 1 : 0),
+                'files' => File::onlyTrashed()
                     ->whereIn('folder_id', Folder::withTrashed()->subtreeOf($folder)->select('id'))
                     ->count(),
             ],
+            // Back already, and listed here only because it still holds
+            // something that is not. The card says so and offers nothing.
+            'partly_restored' => ! $folder->trashed(),
             ...$this->restoreTarget(Folder::withTrashed()->find($folder->parent_id)),
             'can' => $this->trashAbilities($folder, $user),
         ];
@@ -838,10 +1013,14 @@ class FileManagerController extends Controller
     private function trashAbilities(File|Folder $item, User $user): array
     {
         $mine = $item->user_id === $user->id || $user->can('files.manage');
+        // A partly restored container is in this listing to be opened, not to
+        // be acted on — `restore()` and `purge()` both refuse a live row, and
+        // an offer the service refuses is worse than no offer.
+        $trashed = $item->trashed();
 
         return [
-            'restore' => $mine && $user->can('files.edit'),
-            'purge' => $mine && $user->can('files.delete'),
+            'restore' => $trashed && $mine && $user->can('files.edit'),
+            'purge' => $trashed && $mine && $user->can('files.delete'),
         ];
     }
 
@@ -900,7 +1079,10 @@ class FileManagerController extends Controller
 
         return $ancestors
             ->push($folder)
-            ->reject(fn (Folder $crumb) => $crumb->is_root || ! $crumb->trashed())
+            // A crumb is a folder the trash can open, which now includes one
+            // restored out from under rows that are still deleted.
+            ->reject(fn (Folder $crumb) => $crumb->is_root
+                || (! $crumb->trashed() && ! $this->holdsBatchRemnants($crumb)))
             ->map(fn (Folder $crumb) => [
                 'public_id' => $crumb->public_id,
                 'name' => $crumb->name,

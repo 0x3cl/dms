@@ -18,6 +18,26 @@ export default defineComponent({
         const isAuthenticated = computed(() => Boolean(page.props.auth?.user));
 
         /*
+         * Where "Scan the label" goes, and it depends on who is asking.
+         *
+         * Somebody signed in belongs on the register's own lookup: it is the
+         * screen inside the application, it shows them the full record their
+         * account entitles them to, and it reads the same label with the same
+         * QrScanner. A visitor has no account and no page behind `auth`, so
+         * they get the public lookup, which is the door a printed label is
+         * for.
+         *
+         * There is no `/scan` any more. It was a third address for the middle
+         * of three ways to name a document — a camera page reachable from
+         * here and from the dashboard — answering a question both lookups
+         * already answer. One list at three addresses is how the one nobody
+         * maintains drifts.
+         */
+        const scanHref = computed(() => (isAuthenticated.value
+            ? '/documents/track?method=scan'
+            : '/track?method=scan'));
+
+        /*
          * The public lookup, not the authenticated one.
          *
          * `/documents/track` is behind `auth`, so a visitor typing a code off
@@ -95,7 +115,7 @@ export default defineComponent({
             },
         ];
 
-        return { code, codeField, features, invalid, isAuthenticated, org: organization, track };
+        return { code, codeField, features, invalid, isAuthenticated, org: organization, scanHref, track };
     },
     template: `
     <Head title="DocTrack" />
@@ -182,7 +202,7 @@ export default defineComponent({
                          the one action on this page stays one action. -->
                     <p class="mt-5 border-t border-white/20 pt-4 text-sm text-sky-100">
                         No code to hand?
-                        <Link href="/scan" class="font-bold text-white underline-offset-2 hover:underline">Scan the label</Link>
+                        <Link :href="scanHref" class="font-bold text-white underline-offset-2 hover:underline">Scan the label</Link>
                         instead.
                     </p>
                 </form>

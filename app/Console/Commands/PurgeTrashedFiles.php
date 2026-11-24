@@ -118,10 +118,23 @@ class PurgeTrashedFiles extends Command
      */
     private function reasonToKeep(File $file): ?string
     {
-        // A tracked document's bytes. `documents.file_id` is `nullOnDelete`, so
-        // removing this would leave a document reporting its file as missing —
-        // and a tracking code printed on paper pointing at nothing.
-        if ($file->document()->withTrashed()->exists()) {
+        /*
+         * A **deliberately filed** document's bytes. `documents.file_id` is
+         * `nullOnDelete`, so removing these would leave a document reporting
+         * its file as missing — and a tracking code printed on paper
+         * pointing at nothing.
+         *
+         * Narrowed to deliberate filings, because every uploaded file
+         * carries a jacket now and the unnarrowed test would keep every file
+         * forever: the sweep would stop collecting anything at all. The
+         * reasoning the guard was written from is a fact about something
+         * somebody chose to file and may have printed; an automatic filing
+         * is a jacket on the bytes, so the bytes going means the jacket
+         * goes. `FileManager::purge()` withdraws it.
+         */
+        $filed = $file->document()->withTrashed()->first();
+
+        if ($filed && $filed->filed->governsItsFile()) {
             return 'a tracked document still points at it';
         }
 

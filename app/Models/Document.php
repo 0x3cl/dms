@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use App\Enums\DocumentFiling;
+use App\Enums\DocumentStamp;
 use App\Enums\DocumentVisibility;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
@@ -47,6 +49,7 @@ class Document extends Model
         'user_id',
         'uploader_name',
         'visibility',
+        'filed',
         'comments_enabled',
     ];
 
@@ -57,6 +60,7 @@ class Document extends Model
     {
         return [
             'visibility' => DocumentVisibility::class,
+            'filed' => DocumentFiling::class,
             'comments_enabled' => 'boolean',
         ];
     }
@@ -323,6 +327,27 @@ class Document extends Model
     public function restrictsToNamedPeople(): bool
     {
         return $this->visibility->restrictedToNamedPeople();
+    }
+
+    /**
+     * Whether this document's current bytes carry its code.
+     *
+     * **An accessor onto the file, because the stamp is a fact about the
+     * bytes.** It was a column here, which only ever described whatever
+     * version the document pointed at: replacing the file reset it, and the
+     * superseded version's answer — which still matters, since that version
+     * is still on disk and still downloadable — was gone. It lives on
+     * `files` now and is mirrored into `file_versions` with the rest of the
+     * descriptor.
+     *
+     * Reading it through the document keeps every caller unchanged, and
+     * there is still exactly one place the answer is stored.
+     *
+     * @return Attribute<DocumentStamp, never>
+     */
+    protected function stamp(): Attribute
+    {
+        return Attribute::make(get: fn (): DocumentStamp => $this->file?->stamp ?? DocumentStamp::None);
     }
 
     public function isPublic(): bool

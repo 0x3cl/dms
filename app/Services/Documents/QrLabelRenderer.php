@@ -134,9 +134,21 @@ class QrLabelRenderer
         return implode('', $parts);
     }
 
-    public function png(string $target, ?string $logoPath = null): string
+    public function png(string $target, ?string $logoPath = null, ?int $size = null): string
     {
-        $matrix = $this->matrix($target);
+        /*
+         * Rendered **at** the size asked for, never resampled down to it.
+         *
+         * The encoder rounds a module to whole pixels
+         * (`RoundBlockSizeMode::Margin`), so a symbol drawn at the size it
+         * will be used at has crisp module edges. Shrinking a 512px one
+         * instead lands module boundaries on fractional pixels and smears
+         * them unevenly — which does not fail gracefully: measured against a
+         * real decoder, a label resampled to 120px and to 180px read while
+         * 150px, 200px and 240px did not, at every background opacity tried.
+         * It looks like a contrast problem and is an aliasing one.
+         */
+        $matrix = $this->matrix($target, $size);
         $size = $matrix->getOuterSize();
         $scale = self::SUPERSAMPLE;
 
@@ -176,12 +188,12 @@ class QrLabelRenderer
     /**
      * The encoder's matrix. Nothing here is ours.
      */
-    private function matrix(string $target): MatrixInterface
+    private function matrix(string $target, ?int $size = null): MatrixInterface
     {
         return (new MatrixFactory)->create(new QrCode(
             data: $target,
             errorCorrectionLevel: ErrorCorrectionLevel::High,
-            size: self::SIZE,
+            size: $size ?? self::SIZE,
             margin: self::MARGIN,
             // Modules stay on a whole-pixel grid, which keeps edges crisp
             // rather than anti-aliased into their neighbours.

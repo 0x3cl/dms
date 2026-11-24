@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Contracts\StoredBytes;
+use App\Enums\DocumentStamp;
 use App\Enums\FileVisibility;
 use App\Models\Concerns\HasPublicId;
 use App\Services\Files\FilePathFactory;
@@ -44,7 +45,7 @@ class File extends Model implements StoredBytes
     protected $fillable = [
         'public_id', 'user_id', 'owner_name', 'folder_id', 'name', 'original_name',
         'extension', 'mime_type', 'size_bytes', 'checksum', 'disk', 'storage_path',
-        'visibility', 'source', 'has_thumbnail',
+        'visibility', 'source', 'has_thumbnail', 'stamp',
         'version', 'version_created_by_id', 'version_created_by_name',
         'version_note', 'version_reverted_from', 'version_created_at',
     ];
@@ -53,6 +54,11 @@ class File extends Model implements StoredBytes
         'size_bytes' => 'integer',
         'visibility' => FileVisibility::class,
         'has_thumbnail' => 'boolean',
+        // Whether these bytes carry their document's tracking code, and how
+        // it got there. A fact about the bytes, which is why it lives here
+        // and is mirrored into `file_versions` rather than sitting on the
+        // document — see the migration that moved it.
+        'stamp' => DocumentStamp::class,
         'version' => 'integer',
         'version_reverted_from' => 'integer',
         'version_created_at' => 'datetime',
@@ -72,6 +78,36 @@ class File extends Model implements StoredBytes
     public function document(): HasOne
     {
         return $this->hasOne(Document::class);
+    }
+
+    /**
+     * The document whose classification governs these bytes, if any.
+     *
+     * **Two questions that had one answer until every file was filed.**
+     * `document()` asks "is there a jacket on this file" — which is what the
+     * code badge, the trail mirror and `AccessResolver::linkCovers()` want.
+     * This asks "does a classification govern who may read these bytes",
+     * which is a different question and now has a different answer.
+     *
+     * `AccessResolver::forFile()` answers a file carrying a document by that
+     * document's rule *and nothing else*: no item share, no share inherited
+     * from a folder above, no `files.manage` administrator read. That is
+     * right for something somebody deliberately classified and built a
+     * recipient list around — the obfuscated file URL must not be a looser
+     * second door to it. Applied to *every* file it stops being a protection
+     * and becomes an outage: a colleague would lose the files inside a folder
+     * shared with them, Browse Storage would go blank for an administrator,
+     * and a manage-share holder could no longer replace an ordinary file.
+     *
+     * So only a deliberate filing governs its bytes. The test is asked of
+     * `DocumentFiling::governsItsFile()` and lives here, in one place, so the
+     * four callers that need it cannot each arrive at their own answer.
+     */
+    public function governingDocument(): ?Document
+    {
+        $document = $this->document;
+
+        return $document?->filed->governsItsFile() ? $document : null;
     }
 
     /**

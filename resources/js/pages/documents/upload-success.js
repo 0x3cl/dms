@@ -34,6 +34,15 @@ export default defineComponent({
     components: { AdminShell, Card, Head, Link },
     props: {
         code: { type: String, required: true },
+        /**
+         * The document's id, so the form that just posted can ask for the
+         * symbol to stamp into a PDF.
+         *
+         * Read off the page object in that form's `onSuccess`, not from here
+         * — this component never uses it — but declared so the prop is not
+         * an undeclared attribute on the root element.
+         */
+        documentId: { type: Number, default: null },
         fileName: { type: String, required: true },
         qrCodeSvg: { type: String, required: true },
         trackingUrl: { type: String, required: true },

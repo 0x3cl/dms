@@ -136,7 +136,18 @@ export default defineComponent({
                     <i :class="tones[toast.tone].icon"></i>
                 </span>
                 <span class="min-w-0 flex-1">
-                    <span v-if="toast.title" class="block text-xs font-bold uppercase tracking-wide text-slate-900">{{ toast.title }}</span>
+                    <!--
+                        One size and one face for both lines.
+
+                        The title was text-xs and uppercase over a text-sm
+                        message, which is two sizes and a transform in a card
+                        three inches wide — small caps at that size read as a
+                        different typeface rather than as emphasis, so a toast
+                        looked like two voices talking over each other. Weight
+                        carries the hierarchy instead, which is all it has to
+                        do when the two lines are already adjacent.
+                    -->
+                    <span v-if="toast.title" class="block text-sm font-bold leading-6 text-slate-900">{{ toast.title }}</span>
                     <span class="mt-0.5 block whitespace-pre-line break-words text-sm leading-6 text-slate-600">{{ toast.message }}</span>
                 </span>
                 <button type="button" class="-m-1 shrink-0 rounded-lg p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700" title="Dismiss" aria-label="Dismiss" @click="dismissToast(toast.id)">

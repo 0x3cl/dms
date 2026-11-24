@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Enums\DocumentFiling;
 use App\Enums\DocumentVisibility;
 use App\Models\Document;
 use App\Models\DocumentType;
@@ -9,6 +10,7 @@ use App\Models\File;
 use App\Models\User;
 use App\Notifications\PrivateDocumentShared;
 use App\Services\Documents\QrLabelService;
+use App\Services\Files\FileStorage;
 use App\Services\Files\FolderService;
 use App\Support\Roles;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -77,12 +79,59 @@ class TrackedUploadTest extends TestCase
         return Document::query()->latest('id')->sole();
     }
 
-    public function test_an_ordinary_upload_issues_no_tracking_code(): void
+    /**
+     * An ordinary upload is filed too, and the difference is *how*.
+     *
+     * This test used to assert the opposite — that an ordinary upload issued
+     * no tracking code at all — and that was the rule until the office asked
+     * for every uploaded file to carry a code and a QR. What survives of the
+     * old reading is the distinction it was really about: a file dropped into
+     * My Files was not *filed* by anybody, and that is now recorded as
+     * `DocumentFiling::Automatic` rather than as an absence.
+     *
+     * The three properties of an automatic filing are asserted together,
+     * because each one alone would look like a bug: the type is inferred, the
+     * title is the filename, and nobody is tagged.
+     */
+    public function test_an_ordinary_upload_is_filed_automatically(): void
     {
         $this->upload($this->staff())->assertRedirect();
 
-        $this->assertSame(0, Document::query()->count());
         $this->assertSame(1, File::query()->count());
+
+        $document = Document::query()->sole();
+
+        $this->assertSame(DocumentFiling::Automatic, $document->filed);
+        $this->assertFalse(
+            $document->filed->governsItsFile(),
+            'An automatic filing must not decide who may read the file it is stapled to.',
+        );
+        $this->assertNotNull($document->code);
+        $this->assertSame($document->file->original_name, $document->title);
+        $this->assertSame(0, $document->recipients()->count());
+    }
+
+    /**
+     * And it costs no share link and no rendered label.
+     *
+     * Both are the expensive half of registration — a link row with its
+     * activity entry, and a 512px symbol drawn on a 1536×1536 GD canvas — and
+     * an automatic filing happens on every upload. The label's *name* is
+     * still recorded, so the download route's stored-name match is unchanged
+     * and the bytes are drawn the first time somebody asks.
+     */
+    public function test_an_automatic_filing_mints_no_link_and_renders_no_label(): void
+    {
+        $this->upload($this->staff())->assertRedirect();
+
+        $document = Document::query()->sole();
+
+        $this->assertSame(0, $document->shareLinks()->count());
+        $this->assertNotNull($document->qr_code_path);
+        $this->assertFalse(
+            Storage::disk(FileStorage::DISK)->exists('qrcodes/'.$document->qr_code_path),
+            'The label is drawn on demand, not on every upload.',
+        );
     }
 
     public function test_a_tracked_upload_issues_a_code_and_creates_a_document(): void

@@ -327,7 +327,16 @@ class FileManager
             return false;
         }
 
-        $document = $file->document;
+        /*
+         * The **governing** document, for the reason given above read the
+         * other way round. What must not be swapped behind a manage share is
+         * a document somebody deliberately filed and put their name against.
+         * Every uploaded file carries a jacket now, and holding this against
+         * all of them would refuse every manage-share holder the ordinary
+         * replacement a manage share exists to permit. See
+         * `File::governingDocument()`.
+         */
+        $document = $file->governingDocument();
 
         return $document === null || (int) $document->user_id === (int) $actor->id;
     }

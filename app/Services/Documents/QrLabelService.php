@@ -3,6 +3,8 @@
 namespace App\Services\Documents;
 
 use App\Models\Document;
+use App\Services\Files\FileStorage;
+use Illuminate\Support\Facades\Storage;
 
 /**
  * The scannable label a tracking code is printed on.
@@ -86,9 +88,9 @@ class QrLabelService
      * Takes the URL rather than the code, because what a label points at is
      * now a decision (`targetFor()`) rather than a formatting rule.
      */
-    public function png(string $target): string
+    public function png(string $target, ?int $size = null): string
     {
-        return $this->renderer->png($target, $this->logo());
+        return $this->renderer->png($target, $this->logo(), $size);
     }
 
     /**
@@ -107,6 +109,36 @@ class QrLabelService
     public function fileName(string $code): string
     {
         return "{$code}.png";
+    }
+
+    /**
+     * The stored label's path on the private disk, rendering it if it is not
+     * there yet.
+     *
+     * Registration used to write this for every document. It stopped, because
+     * every uploaded file is filed now and the label is the expensive part: a
+     * 512px symbol is drawn on a 1536×1536 GD canvas and resampled down, once
+     * per document, which a two-hundred-entry archive would do two hundred
+     * times for labels nobody has asked to see. `documents.qr_code_path` is
+     * still set at registration, so the stored-name match that guards
+     * `downloadQr()` against traversal is unchanged — what is deferred is
+     * only the drawing.
+     *
+     * Idempotent, and the one place the bytes are produced: both the download
+     * route and the three link events that rewrite a label come through here,
+     * so there is no second statement of where a label lives or what it
+     * points at.
+     */
+    public function materialise(Document $document): string
+    {
+        $path = 'qrcodes/'.($document->qr_code_path ?: $this->fileName($document->code));
+        $disk = Storage::disk(FileStorage::DISK);
+
+        if (! $disk->exists($path)) {
+            $disk->put($path, $this->png($this->targetFor($document)));
+        }
+
+        return $path;
     }
 
     /**

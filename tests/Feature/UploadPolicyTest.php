@@ -124,7 +124,10 @@ class UploadPolicyTest extends TestCase
         $this->uploadDocument($user, UploadedFile::fake()->create('d.png', 8, 'image/png'))
             ->assertSessionHasErrors('file');
 
-        $this->assertSame(1, Document::query()->count());
+        // Deliberate filings only: these tests count what the *register's*
+        // form accepted, and every My Files upload beside it is now filed
+        // automatically as well.
+        $this->assertSame(1, Document::query()->where('filed', 'deliberate')->count());
         // Two: the direct upload, and the one a tracked document stores
         // alongside its row. The two modules already share the store, which is
         // why they cannot sensibly have had two policies over it.
@@ -235,7 +238,10 @@ class UploadPolicyTest extends TestCase
         $this->uploadDocument($user, UploadedFile::fake()->create('pds.xlsx', 64, self::XLSX))
             ->assertSessionHasNoErrors();
 
-        $this->assertSame(1, Document::query()->count());
+        // Deliberate filings only: these tests count what the *register's*
+        // form accepted, and every My Files upload beside it is now filed
+        // automatically as well.
+        $this->assertSame(1, Document::query()->where('filed', 'deliberate')->count());
     }
 
     /**
@@ -512,7 +518,10 @@ class UploadPolicyTest extends TestCase
         $this->uploadDocument($user, UploadedFile::fake()->create('memo.pdf', 8, 'application/pdf'))
             ->assertSessionHasNoErrors();
 
-        $this->assertSame(1, Document::query()->count());
+        // Deliberate filings only: these tests count what the *register's*
+        // form accepted, and every My Files upload beside it is now filed
+        // automatically as well.
+        $this->assertSame(1, Document::query()->where('filed', 'deliberate')->count());
     }
 
     /** Widening the policy works without a deploy — the whole point. */
@@ -527,7 +536,10 @@ class UploadPolicyTest extends TestCase
         $this->uploadDocument(User::factory()->create(), UploadedFile::fake()->create('note.txt', 2, 'text/plain'))
             ->assertSessionHasNoErrors();
 
-        $this->assertSame(1, Document::query()->count());
+        // Deliberate filings only: these tests count what the *register's*
+        // form accepted, and every My Files upload beside it is now filed
+        // automatically as well.
+        $this->assertSame(1, Document::query()->where('filed', 'deliberate')->count());
     }
 
     // -------------------------------------------------------------- the screen

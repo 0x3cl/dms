@@ -25,12 +25,20 @@ export default defineComponent({
         notFound: { type: Boolean, default: false },
         /** The input could not be a tracking code at all — a separate miss. */
         malformed: { type: Boolean, default: false },
+        /**
+         * Which of the three ways in the screen opens on.
+         *
+         * `/scan` used to be a page of its own for the middle one, which is
+         * the same list at a second address. Arriving here with
+         * `?method=scan` opens the camera on this screen instead.
+         */
+        method: { type: String, default: 'code' },
     },
     template: `
     <Head title="Track Document" />
     <AdminShell active="track" title="Track Document">
         <Card class="w-full">
-            <TrackDocumentCard :code="code" :not-found="notFound" :malformed="malformed" />
+            <TrackDocumentCard :code="code" :not-found="notFound" :malformed="malformed" :initial-method="method" />
         </Card>
     </AdminShell>
 `,
