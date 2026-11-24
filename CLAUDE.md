@@ -416,7 +416,13 @@ On top of that, soft deletes on `users`, `divisions`, `sections` and `documents`
 
 Both matter, and the tests assert them separately. Before soft deletes, a hard delete preserved the document row and destroyed its link, so a document survived its uploader and immediately had *no owner* — nobody could edit or delete it. That was the intended outcome of a worse earlier design, where `documents.user_id` cascaded and deleting an account deleted its documents outright.
 
-Which is why an account that still owns anything cannot be closed without handing it over. `OwnershipTransferService` moves folders, files and documents, and pointedly leaves two things alone: the audit trail, because ownership is a fact about now and an audit row is a fact about then; and `documents.uploader_name`, because that is the snapshot of who filed a document and is printed beside a tracking code — the successor can edit and end it, they did not upload it.
+Which is why closing an account that still owns something has to say what becomes of it, and why the one thing it may never mean is deleting it. There are two answers and the request carries one: hand everything to a named account, or `keep_files`, which leaves every file, folder and tracked document exactly where it is, owned by the closed account. A request stating neither is refused with a count — not because a transfer is required, but because a blank picker is not a decision, and the cost of the second answer is invisible on that screen.
+
+What that cost is: a closed account cannot sign in, so the ownership clause in `AccessResolver` reaches nobody, and its storage is left to `files.manage`, to the shares already on it, and to a tracked document's own rule. **Which is why Browse Storage looks up its owners `withTrashed()`** — `browsableOwners()`, `listingOwners()`, the `owner` lookup and the `owned_by` filter — and labels one "(closed account)". Scoped to live accounts, the one screen that can still reach those files would not list them, and files nothing can reach are indistinguishable from files that were deleted with the account, which is the thing this choice promises not to do.
+
+`/account` has no `keep_files`, and that asymmetry is deliberate: somebody closing their own account is not the person who would have to go and find that storage afterwards, and the administrator doing it here is.
+
+`OwnershipTransferService` is the transfer half, and it pointedly leaves two things alone: the audit trail, because ownership is a fact about now and an audit row is a fact about then; and `documents.uploader_name`, because that is the snapshot of who filed a document and is printed beside a tracking code — the successor can edit and end it, they did not upload it.
 
 ### An archive never chooses where its bytes land
 

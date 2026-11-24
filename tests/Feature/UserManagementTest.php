@@ -381,6 +381,46 @@ class UserManagementTest extends TestCase
         $this->assertSame($successor->name, $file->fresh()->owner_name);
     }
 
+    public function test_an_account_can_be_closed_with_its_files_kept_in_place(): void
+    {
+        $leaver = User::factory()->create();
+        $file = $this->fileFor($leaver);
+
+        $this->actingAs($this->admin())
+            ->delete("/users/{$leaver->id}", ['keep_files' => true])
+            ->assertRedirect('/users');
+
+        $this->assertSoftDeleted($leaver);
+
+        // Not deleted, not reassigned, not even trashed: the point of this
+        // choice is that the storage is untouched.
+        $file = $file->fresh();
+        $this->assertNotNull($file);
+        $this->assertSame($leaver->id, $file->user_id);
+        $this->assertNull($file->deleted_at);
+    }
+
+    public function test_browse_storage_still_lists_a_closed_account_that_kept_its_files(): void
+    {
+        $admin = $this->admin();
+        $leaver = User::factory()->create(['first_name' => 'Gone', 'last_name' => 'Away']);
+        $this->fileFor($leaver);
+
+        $this->actingAs($admin)->delete("/users/{$leaver->id}", ['keep_files' => true]);
+
+        // Otherwise the files exist and nothing can reach them, which reads as
+        // their having been deleted with the account.
+        $this->actingAs($admin)
+            ->get('/files/browse')
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->where(
+                'owners',
+                fn ($owners) => collect($owners)->contains(
+                    fn ($owner) => str_contains($owner['name'], 'Away') && str_contains($owner['name'], 'closed account'),
+                ),
+            ));
+    }
+
     public function test_a_closed_account_is_off_the_list(): void
     {
         $admin = $this->admin();

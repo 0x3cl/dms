@@ -166,7 +166,9 @@ class FileManagerController extends Controller
         ];
 
         if ($owner) {
-            $target = User::query()->where('public_id', $owner['public_id'])->firstOrFail();
+            // `withTrashed()`, because a closed account's storage is still
+            // there and this screen is the only way left to reach it.
+            $target = User::withTrashed()->where('public_id', $owner['public_id'])->firstOrFail();
             $folder = $this->locateFolder($request, $target);
             $listing = $this->listing($request, $folder, $user);
         }
@@ -461,13 +463,20 @@ class FileManagerController extends Controller
             ->filter()
             ->unique();
 
-        return User::query()
+        // `withTrashed()` for the reason `browsableOwners()` states: an item
+        // shared by somebody whose account has since been closed is still
+        // shared, and a blank owner would be the only sign of it.
+        return User::withTrashed()
             ->whereKey($ids)
             ->orderBy('name')
-            ->get(['id', 'public_id', 'name'])
+            ->get(['id', 'public_id', 'name', 'deleted_at'])
             ->map(fn (User $owner) => [
                 'public_id' => $owner->public_id,
-                'name' => $owner->id === $user->id ? 'Me' : $owner->name,
+                'name' => match (true) {
+                    $owner->id === $user->id => 'Me',
+                    $owner->trashed() => $owner->name.' (closed account)',
+                    default => $owner->name,
+                },
             ])
             ->values();
     }
@@ -667,13 +676,20 @@ class FileManagerController extends Controller
             )
             ->unique();
 
-        return User::query()
+        /*
+         * `withTrashed()` is load-bearing here. An account can be closed with
+         * its files left in place, and the owner row is then soft-deleted — so
+         * scoping this to live accounts would drop that storage off the one
+         * screen that can still reach it, which reads as the files having been
+         * deleted with the account. They were not.
+         */
+        return User::withTrashed()
             ->whereKey($ids)
             ->orderBy('name')
-            ->get(['id', 'public_id', 'name'])
+            ->get(['id', 'public_id', 'name', 'deleted_at'])
             ->map(fn (User $owner) => [
                 'public_id' => $owner->public_id,
-                'name' => $owner->name,
+                'name' => $owner->trashed() ? $owner->name.' (closed account)' : $owner->name,
             ]);
     }
 
@@ -1174,7 +1190,7 @@ class FileManagerController extends Controller
             return null;
         }
 
-        return User::query()->where('public_id', $publicId)->value('id');
+        return User::withTrashed()->where('public_id', $publicId)->value('id');
     }
 
     /**

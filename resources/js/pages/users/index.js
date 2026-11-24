@@ -61,7 +61,7 @@ export default defineComponent({
         const processing = ref(false);
 
         const transferOptions = computed(() => [
-            { value: '', label: 'Nobody — this account holds nothing' },
+            { value: '', label: 'Nobody — leave them with this closed account' },
             ...props.users.data
                 .filter((candidate) => candidate.id !== closing.value?.id)
                 .map((candidate) => ({
@@ -80,8 +80,10 @@ export default defineComponent({
         const confirmClose = () => {
             processing.value = true;
 
+            // No transferee is a decision, not a blank: `keep_files` is what
+            // says so, and the endpoint refuses a close that says neither.
             router.delete(`/users/${closing.value.id}`, {
-                data: { transfer_to: transferTo.value || null },
+                data: { transfer_to: transferTo.value || null, keep_files: !transferTo.value },
                 preserveScroll: true,
                 onFinish: () => {
                     processing.value = false;
@@ -272,7 +274,7 @@ export default defineComponent({
                 <div class="mt-2">
                     <SearchableSelect v-model="transferTo" :options="transferOptions" placeholder="Nobody" />
                 </div>
-                <p class="mt-1 text-xs text-slate-500">An account that still owns files cannot be closed without naming someone — otherwise those files would belong to a sign-in nobody can use. Who uploaded what does not change.</p>
+                <p class="mt-1 text-xs text-slate-500">Nothing is deleted either way, and who uploaded what does not change. Leave them here and every file, folder and tracked document stays exactly where it is — but the owner can no longer sign in, so only an administrator reaches them, under this name in Browse Storage.</p>
             </div>
         </ConfirmActionModal>
     </AdminShell>

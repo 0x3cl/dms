@@ -61,7 +61,12 @@ The form hides what it would refuse via a `can` prop, but the refusal itself is 
 
 ### Closing an account is not a plain delete
 
-It goes through `OwnershipTransferService`, exactly as `ProfileController::destroy()` does. An account that still owns storage cannot simply go — its files would point at a sign-in nobody can use, editable by nobody, with nothing saying so — so the request either names someone to hand everything to or it is refused with a count of what is in the way.
+An account that still owns storage cannot simply go *silently* — its files would point at a sign-in nobody can use, with nothing saying so — so the request has to state what becomes of them, and is refused with a count if it states neither:
+
+- **`transfer_to`** hands everything to a named account, through `OwnershipTransferService`, exactly as `ProfileController::destroy()` does. The actor recorded is the administrator, not the leaver.
+- **`keep_files`** closes the account and leaves every file, folder and tracked document exactly where it is, owned by it. Nothing is deleted either way; what this one costs is reach, since the owner can no longer sign in. Those items are then reachable through `files.manage`, through a share already on them, and through a tracked document's own rule — which is why Browse Storage resolves its owner lookups `withTrashed()` and labels one "(closed account)". Scoped to live accounts, the one screen that can still reach that storage would not list it.
+
+`/account` offers only the first: the person closing their own account is not the one who would have to go and find the files afterwards.
 
 The delete is **soft**: the account cannot sign in, and every audit row and remaining link stays intact.
 

@@ -41,6 +41,8 @@ Soft-deleting `users` is what makes an ownership transfer possible rather than a
 
 The request either names an account to hand everything to, or it is refused. The account page shows the holdings up front rather than at the moment of refusal.
 
+An administrator closing *somebody else's* account on `/users` has a second answer available, `keep_files`: the account closes and its storage stays exactly where it is, owned by the closed account and reachable through `files.manage`, an existing share, or a tracked document's own rule. Neither answer is the default — a request giving neither is still refused with a count — and neither deletes a file. The self-service page has no equivalent, because the person closing their own account is not the one who would have to find that storage afterwards. See `directory.md` → Closing an account.
+
 ## Ownership transfer
 
 `App\Services\Files\OwnershipTransferService::transfer()` moves folders, files and documents from one account to another, in one transaction.

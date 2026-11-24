@@ -162,10 +162,16 @@ class UserController extends Controller
     /**
      * Close an account.
      *
-     * The same rule as a user closing their own on /account, and for the same
-     * reason: an account that still owns storage cannot simply go, or its files
-     * point at a sign-in nobody can use and nothing says so. The request either
-     * names someone to hand everything to or it is refused with a count.
+     * An account that still owns storage cannot go *silently*: its files would
+     * point at a sign-in nobody can use and nothing would say so. So the
+     * request has to state what happens to them — hand them to a named
+     * account, or `keep_files` to leave them with the closed one — and is
+     * refused with a count if it states neither.
+     *
+     * Closing never deletes a file either way. This is the one place the two
+     * differ from /account, which has no `keep_files`: the person closing their
+     * own account is not the person who would have to go and find those files
+     * afterwards, and the administrator doing it here is.
      *
      * The actor recorded on the transfer is the administrator doing it, not the
      * account being closed — that is the one difference from the self-service
@@ -178,6 +184,7 @@ class UserController extends Controller
     {
         $validated = $request->validate([
             'transfer_to' => ['nullable', 'integer', 'exists:users,id'],
+            'keep_files' => ['nullable', 'boolean'],
         ]);
 
         if ($user->is($request->user())) {
@@ -190,8 +197,27 @@ class UserController extends Controller
 
         $holdings = $this->transfers->holdings($user);
 
-        if ($holdings['total'] > 0 && empty($validated['transfer_to'])) {
-            return back()->with('error', 'That account still holds '.$holdings['total'].' item(s). Choose someone to hand them to first.');
+        /*
+         * Two answers, and the request has to give one of them.
+         *
+         * Handing everything over is still the usual one: somebody leaves, a
+         * colleague takes their work on, and every file has a live owner who
+         * can edit, move and share it.
+         *
+         * `keep_files` is the other, and it closes the account while leaving
+         * every file, folder and tracked document exactly where it is, owned by
+         * the closed account. Nothing is deleted — not a byte, not a row, not a
+         * tracking code. What it costs is reach: the owner can no longer sign
+         * in, so those items are reachable only through `files.manage` (Browse
+         * Storage lists a closed account for exactly this reason), through a
+         * share already on them, and through a tracked document's own rule.
+         *
+         * It is a named choice rather than the default because that cost is
+         * invisible on this screen, and an administrator who meant to hand the
+         * files on must not orphan them by leaving a picker blank.
+         */
+        if ($holdings['total'] > 0 && empty($validated['transfer_to']) && ! ($validated['keep_files'] ?? false)) {
+            return back()->with('error', 'That account still holds '.$holdings['total'].' item(s). Hand them to someone, or choose to leave them with the closed account.');
         }
 
         if (! empty($validated['transfer_to'])) {
@@ -205,7 +231,11 @@ class UserController extends Controller
 
         $user->delete();
 
-        return to_route('users.index')->with('success', 'Account closed.');
+        $message = $holdings['total'] > 0 && empty($validated['transfer_to'])
+            ? 'Account closed. Its '.$holdings['total'].' item(s) were kept and stay in Browse Storage under its name.'
+            : 'Account closed.';
+
+        return to_route('users.index')->with('success', $message);
     }
 
     /**
